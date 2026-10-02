@@ -458,6 +458,20 @@ def r53_endpoints_require_auth(h, ck):
         ck.is_err(r, 401, "unauthenticated", "%s %s without token" % (method, path))
 
 
+@test("r102_r103_no_out_of_scope_endpoints", "R102", "R103")
+def r102_r103_absent(h, ck):
+    ck.eq(h.request("POST", "/_test/reset", body=std_fixture()).status, 204, "reset")
+    u = Users(h, ck, handles=("ada",))
+    for path in ["/users/search", "/directory", "/users", "/search",
+                 "/auth/verify", "/auth/reset-password", "/auth/refresh", "/auth/roles"]:
+        r = h.request("GET", path, token=u.t("ada"))
+        ck.true(r.status in (404, 405), "no directory/search or auth-management endpoint at %s" % path,
+                "got %s %.120s" % (r.status, r.text))
+        p = h.request("POST", path, token=u.t("ada"), body={})
+        ck.true(p.status in (404, 405), "no POST %s either" % path,
+                "got %s %.120s" % (p.status, p.text))
+
+
 # ------------------------------------------------------------------ idempotency
 
 @test("r56_missing_key_on_five_paths", "R56", needs=('payments', 'requests', 'pay', 'splits', 'settlements'))

@@ -118,6 +118,8 @@ not yet merged are probed first and their tests are skipped with a reason.
 | R99 settlement response shape | r99_settlement_response_shape |
 | R100 replay + constituent visibility | r100_settlement_replay_and_visibility |
 | R101 settlements preserved by import | r101_settlement_preserved_by_import |
+| R102 no directory/user-search endpoints | r102_r103_no_out_of_scope_endpoints |
+| R103 no email-verification/password-reset/refresh/role endpoints | r102_r103_no_out_of_scope_endpoints |
 
 ## Recorded assumptions exercised by the suite
 
@@ -129,5 +131,9 @@ not yet merged are probed first and their tests are skipped with a reason.
   only claims the request is created, so r83_zero_share_still_requests asserts creation only.
 - Export body compared as parsed JSON where possible; byte-compare used only for
   snapshot-equality checks (r87, r90).
+- A6 (from requirements.md): 401 unauthenticated precedes 400 missing_idempotency_key when
+  both apply — asserted in r53 (POST /payments with neither token nor key → 401).
+- A7 (from requirements.md): Idempotency-Key >255 chars → 422 validation_failed and never
+  claims or consults a record (no false 409) — asserted in r44_key_length_range.
 - Import of a structurally invalid `state` (no recognizable users) is expected to 422 per
   "an invalid state give 422" (r88).
