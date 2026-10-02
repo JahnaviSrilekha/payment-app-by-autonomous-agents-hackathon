@@ -48,7 +48,8 @@ class TestT2Auth(unittest.TestCase):
         status, payload, _ = self.client.request("GET", "/me", token=token)
         self.assertEqual(status, 200)
         self.assertEqual(set(payload.keys()),
-                         {"user_id", "display_name", "handle", "balance", "currency", "minor_units"})
+                         {"user_id", "display_name", "handle", "balance", "total",
+                          "available", "held", "currency", "minor_units"})
         self.assertEqual(payload["display_name"], "Ada")
         self.assertEqual(payload["handle"], "ada")
         self.assertEqual(payload["balance"], 0)

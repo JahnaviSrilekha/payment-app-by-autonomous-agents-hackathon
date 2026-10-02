@@ -146,7 +146,14 @@ def ep_import(ctx):
 
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
-    return 200, auth.me_response(user)
+    payload = auth.me_response(user)
+    # balance == total always; available/held are derived at read time from the open
+    # holds (design.md section 11). Runs while holding STATE_LOCK, like every read.
+    now = state_mod.now_utc()
+    payload["total"] = user["balance"]
+    payload["held"] = state_mod.held(user["id"], service, now)
+    payload["available"] = state_mod.available(user["id"], service, now)
+    return 200, payload
 
 
 # --- payments, activity, requests (batches 2+) ---------------------------------
