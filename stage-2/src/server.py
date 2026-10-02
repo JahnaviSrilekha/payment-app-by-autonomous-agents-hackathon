@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth
+import authorizations
 import errors
 import idempotency
 import payments
@@ -167,6 +168,7 @@ route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_reque
 route("GET", r"/requests")(requests_endpoints.list_requests)
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
+route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
 
 
 def run_idempotent(ctx, user, fn):
