@@ -24,6 +24,7 @@ import requests as requests_endpoints
 import settlements
 import splits
 import state as state_mod
+import ui
 import testctl
 
 DEFAULT_PORT = 8080
@@ -154,6 +155,39 @@ def ep_import(ctx):
 # --- authenticated endpoints ---------------------------------------------------
 
 
+# --- browser session (HTML screens) ----------------------------------------------
+
+COOKIE_NAME = "pebble_token"
+
+
+def cookie_token(headers):
+    """The session token from the browser's cookie, if any (UI-only; the JSON API
+    stays bearer-only per stage-1)."""
+    header = headers.get("Cookie")
+    if not header:
+        return None
+    for part in header.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == COOKIE_NAME and value:
+            return unquote(value)
+    return None
+
+
+def cookie_user(headers):
+    """Resolve the cookie token to a user row. Call while holding STATE_LOCK."""
+    token = cookie_token(headers)
+    if not token:
+        return None
+    service = state_mod.get()
+    user_id = service["tokens"].get(token)
+    if user_id is None or user_id not in service["users"]:
+        return None
+    return service["users"][user_id]
+
+
+def html_response(text):
+    return Raw("text/html; charset=utf-8", text.encode("utf-8"))
+
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
     payload = auth.me_response(user)
@@ -183,13 +217,33 @@ route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
 route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
 route("GET", r"/authorizations")(authorizations.list_authorizations)
 
+# --- browser screens (design.md section 14; HTML only when Accept: text/html) -----
+
+@route("GET", r"/signup", public=True)
+def ep_signup_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        return 200, html_response(ui.signup_page(cookie_user(ctx.headers)))
+
+
+@route("GET", r"/login", public=True)
+def ep_login_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        return 200, html_response(ui.login_page(cookie_user(ctx.headers)))
+
+
+
+
 # --- browser UI assets (design.md section 14: bundled, no CDN) ------------------
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _STATIC_CACHE = {}
 
 
-@route("GET", r"/static/(?P<name>app\.css|app\.js)", public=True)
+@route("GET", r"/static/(?P<name>app\.css|app\.js|app-boot\.js)", public=True)
 def ep_static(ctx):
     name = ctx.params["name"]
     if name not in _STATIC_CACHE:

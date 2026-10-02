@@ -222,12 +222,205 @@
     });
   }
 
+  /* --- browser session (cookie; the JSON API itself stays bearer-only) -------- */
+
+  function readCookie(name) {
+    var parts = String(document.cookie).split(";");
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].trim();
+      var eq = kv.indexOf("=");
+      if (eq > -1 && kv.slice(0, eq) === name) {
+        return decodeURIComponent(kv.slice(eq + 1));
+      }
+    }
+    return null;
+  }
+
+  function sessionToken() {
+    return readCookie("pebble_token");
+  }
+
+  function setSession(token) {
+    document.cookie = "pebble_token=" + encodeURIComponent(token)
+      + "; path=/; max-age=86400; samesite=lax";
+  }
+
+  function clearSession() {
+    document.cookie = "pebble_token=; path=/; max-age=0; samesite=lax";
+  }
+
+  function apiFetch(method, path, body, key) {
+    var headers = {};
+    var token = sessionToken();
+    if (token) {
+      headers.Authorization = "Bearer " + token;
+    }
+    if (key !== undefined && key !== null) {
+      headers["Idempotency-Key"] = key;
+    }
+    return fetchJSON(path, { method: method, body: body, headers: headers });
+  }
+
+  /* --- transient message elements ---------------------------------------------
+   * Error/uncertain messages exist in the DOM only while there is one (R115:
+   * "present only when there is one"); created on demand, removed on success. */
+  function messageHost(testid) {
+    var map = {
+      "pay-error": "#pay-form",
+      "pay-uncertain": "#pay-form",
+      "request-error": "#request-form",
+      "split-error": "#split-form",
+      "auth-error": "#login-form"
+    };
+    var selector = map[testid] || "main";
+    return document.querySelector(selector) || document.querySelector("main");
+  }
+
+  function showMessage(testid, kind, message) {
+    removeMessage(testid);
+    var el = document.createElement("p");
+    el.className = "banner banner-" + kind;
+    el.setAttribute("data-testid", testid);
+    el.setAttribute("role", "alert");
+    el.textContent = message;
+    var host = messageHost(testid);
+    var anchor = host.querySelector(".button, button");
+    if (anchor) {
+      host.insertBefore(el, anchor);
+    } else {
+      host.insertBefore(el, host.firstChild);
+    }
+  }
+
+  function removeMessage(testid) {
+    var el = document.querySelector('[data-testid="' + testid + '"]');
+    if (el) {
+      el.remove();
+    }
+  }
+
+  function errorMessage(body, fallback) {
+    if (body && body.error && body.error.message) {
+      return body.error.message;
+    }
+    return fallback;
+  }
+
+  /* Outcome classification for the submit lifecycle (R133/R135): any HTTP response
+   * is a definite answer; only a thrown fetch (network failure / lost response) is
+   * uncertain. */
+  function classifyOutcome(status) {
+    if (status >= 200 && status < 300) {
+      return "success";
+    }
+    return "refused";
+  }
+
+  /* --- shared rendering helpers ------------------------------------------------ */
+
+  function fieldOf(testid) {
+    return document.querySelector('[data-testid="' + testid + '"]');
+  }
+
+  function val(testid) {
+    var el = fieldOf(testid);
+    return el ? el.value : "";
+  }
+
+  function esc(text) {
+    return String(text).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function renderWallet(me) {
+    var available = fieldOf("wallet-available");
+    var balance = fieldOf("wallet-balance");
+    if (!available || !balance) {
+      return;
+    }
+    available.setAttribute("data-amount", String(me.available));
+    available.textContent = formatAmount(me.available, me.minor_units, me.currency);
+    balance.setAttribute("data-amount", String(me.total));
+    balance.textContent = "Total " + formatAmount(me.total, me.minor_units, me.currency);
+    var held = fieldOf("wallet-held");
+    if (me.held > 0) {
+      if (!held) {
+        held = document.createElement("span");
+        held.className = "wallet-chip wallet-chip-held";
+        held.setAttribute("data-testid", "wallet-held");
+        var paragraph = document.createElement("p");
+        paragraph.className = "wallet-secondary";
+        paragraph.appendChild(held);
+        balance.parentNode.insertBefore(paragraph, balance.nextSibling);
+      }
+      held.setAttribute("data-amount", String(me.held));
+      held.textContent = formatAmount(me.held, me.minor_units, me.currency) + " held";
+    } else if (held) {
+      held.parentNode.remove();
+    }
+  }
+
+  /* --- auth screens (T17) -------------------------------------------------------- */
+
+  function initAuth(boot) {
+    var form = document.getElementById(boot.mode === "signup"
+      ? "signup-form" : "login-form");
+    if (!form) {
+      return;
+    }
+    form.querySelector('[data-testid="' + boot.mode + '-submit"]')
+      .addEventListener("click", async function () {
+        var email = val(boot.mode + "-email");
+        var password = val(boot.mode + "-password");
+        var body = { email: email, password: password };
+        if (boot.mode === "signup") {
+          body.display_name = val("signup-display-name");
+        }
+        var outcome;
+        try {
+          outcome = await apiFetch("POST", "/auth/" + boot.mode, body);
+        } catch (err) {
+          outcome = null;
+        }
+        if (outcome === null) {
+          showMessage("auth-error", "error",
+            "We couldn't reach the server — please try again.");
+          return;
+        }
+        if (classifyOutcome(outcome.status) === "success") {
+          setSession(outcome.body.token); // R114: stage-1 endpoints mint the token
+          window.location.href = "/";
+          return;
+        }
+        showMessage("auth-error", "error",
+          errorMessage(outcome.body, "Signup failed")); // R113: error without a reload
+      });
+
+    var logout = fieldOf("logout-button");
+    if (logout) {
+      logout.addEventListener("click", function () {
+        clearSession();
+        window.location.href = "/login";
+      });
+    }
+  }
+
   return {
     parseDecimalAmount: parseDecimalAmount,
     formatAmount: formatAmount,
     createRefreshGuard: createRefreshGuard,
     sha256Hex: sha256Hex,
     deriveKey: deriveKey,
-    fetchJSON: fetchJSON
+    fetchJSON: fetchJSON,
+    readCookie: readCookie,
+    sessionToken: sessionToken,
+    setSession: setSession,
+    clearSession: clearSession,
+    apiFetch: apiFetch,
+    showMessage: showMessage,
+    removeMessage: removeMessage,
+    classifyOutcome: classifyOutcome,
+    initAuth: initAuth
   };
 });
