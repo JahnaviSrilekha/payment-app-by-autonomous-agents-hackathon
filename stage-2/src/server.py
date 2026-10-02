@@ -243,13 +243,7 @@ route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
     authorizations.capture_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
 route("GET", r"/authorizations")(authorizations.list_authorizations)
-route("POST", r"/splits", idempotent=True)(splits.create_split)
-route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
-route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
-route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
-    authorizations.capture_authorization)
-route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
-route("GET", r"/authorizations")(authorizations.list_authorizations)
+
 
 # --- browser screens (design.md section 14; HTML only when Accept: text/html) -----
 
@@ -287,6 +281,17 @@ def ep_login_screen(ctx):
         raise errors.not_found("no such resource")
     with state_mod.STATE_LOCK:
         return 200, html_response(ui.login_page(cookie_user(ctx.headers)))
+
+
+@route("GET", r"/split", public=True)
+def ep_split_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        return 200, html_response(ui.split_page(cookie_user(ctx.headers),
+                                                service["minor_units"],
+                                                service["currency"]))
 
 
 

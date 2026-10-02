@@ -222,6 +222,20 @@
     });
   }
 
+  /* --- split shares: port of splits.split_shares (R128, A11) -----------------
+   * Largest-remainder equal split in participant order: the first amount % count
+   * participants get one extra minor unit. Cross-language tests pin this port to
+   * the server's Python function over a sweep so the two can never diverge. */
+  function splitShares(amount, count) {
+    var base = Math.floor(amount / count);
+    var remainder = amount % count;
+    var out = [];
+    for (var i = 0; i < count; i++) {
+      out.push(base + (i < remainder ? 1 : 0));
+    }
+    return out;
+  }
+
   /* --- browser session (cookie; the JSON API itself stays bearer-only) -------- */
 
   function readCookie(name) {
@@ -693,6 +707,115 @@
     refresh();
   }
 
+  /* --- split screen (T20) ----------------------------------------------------------- */
+
+  function parseHandles(raw) {
+    return String(raw || "").split(",").map(function (h) {
+      return h.trim();
+    }).filter(function (h) {
+      return h.length > 0;
+    });
+  }
+
+  function renderSplitPreview(amountMinor, handles, cfg) {
+    var preview = fieldOf("split-preview");
+    if (!preview) {
+      return;
+    }
+    var shares = splitShares(amountMinor, handles.length);
+    var list = el("ul", "list");
+    handles.forEach(function (handle, i) {
+      var item = el("li", "row");
+      var main = el("div", "row-main");
+      main.appendChild(el("p", "row-title", esc(handle)));
+      item.appendChild(main);
+      var money = el("p", "row-money",
+        formatAmount(shares[i], cfg.minor_units, cfg.currency));
+      money.setAttribute("data-testid", "split-share-" + handle);
+      money.setAttribute("data-amount", String(shares[i]));
+      item.appendChild(money);
+      list.appendChild(item);
+    });
+    var title = el("h2", "card-title", "Preview");
+    while (preview.firstChild) {
+      preview.removeChild(preview.firstChild);
+    }
+    preview.appendChild(title);
+    preview.appendChild(list);
+    preview.hidden = false;
+  }
+
+  function hideSplitPreview() {
+    var preview = fieldOf("split-preview");
+    if (preview) {
+      preview.hidden = true;
+      preview.innerHTML = "";
+    }
+  }
+
+  function initSplit(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var cfg = boot;
+    var form = document.getElementById("split-form");
+
+    function updatePreview() {
+      var parsed = parseDecimalAmount(val("split-amount"), cfg.minor_units);
+      var handles = parseHandles(val("split-handles"));
+      if (!parsed.ok || handles.length < 1) {
+        hideSplitPreview();
+        return;
+      }
+      renderSplitPreview(parsed.minor, handles, cfg);
+    }
+
+    ["split-amount", "split-handles"].forEach(function (id) {
+      document.getElementById(id).addEventListener("input", updatePreview);
+    });
+
+    form.querySelector('[data-testid="split-submit"]').addEventListener("click",
+      async function () {
+        var amountRaw = val("split-amount");
+        var handles = parseHandles(val("split-handles"));
+        var note = val("split-note");
+        var parsed = parseDecimalAmount(amountRaw, cfg.minor_units);
+        if (!parsed.ok) {
+          showMessage("split-error", "error", parsed.error); // R119
+          return;
+        }
+        if (handles.length < 1) {
+          showMessage("split-error", "error", "Add at least one participant handle");
+          return;
+        }
+        removeMessage("split-error");
+        var body = {
+          amount: parsed.minor,
+          participant_handles: handles,
+          note: note
+        };
+        var key = await deriveKey("split-form", [amountRaw, val("split-handles"), note]);
+        var outcome;
+        try {
+          outcome = await apiFetch("POST", "/splits", body, key);
+        } catch (err) {
+          outcome = null;
+        }
+        if (outcome === null) {
+          showMessage("split-error", "uncertain",
+            "We couldn't confirm this split — press Split again to check.");
+          return;
+        }
+        if (classifyOutcome(outcome.status) === "success") {
+          // R129: any mechanism is fine — a full navigation waits for the write
+          window.location.href = "/requests";
+          return;
+        }
+        showMessage("split-error", "error",
+          errorMessage(outcome.body, "Split refused")); // inputs preserved
+      });
+  }
+
   /* --- auth screens (T17) -------------------------------------------------------- */
 
   function initAuth(boot) {
@@ -745,6 +868,7 @@
     sha256Hex: sha256Hex,
     deriveKey: deriveKey,
     fetchJSON: fetchJSON,
+    splitShares: splitShares,
     readCookie: readCookie,
     sessionToken: sessionToken,
     setSession: setSession,
@@ -758,6 +882,9 @@
     initHome: initHome,
     initAuth: initAuth,
     renderRequests: renderRequests,
-    initRequests: initRequests
+    initRequests: initRequests,
+    renderSplitPreview: renderSplitPreview,
+    parseHandles: parseHandles,
+    initSplit: initSplit
   };
 });

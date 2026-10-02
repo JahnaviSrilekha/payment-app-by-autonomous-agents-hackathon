@@ -404,3 +404,35 @@ def requests_page(user, incoming, outgoing, minor_units, currency, boot_extra=No
             + requests_section(outgoing, "outgoing", minor_units, currency, False)
             + empty + error_banner("request-error"))
     return page("Requests", body, active="/requests", user=user, boot=boot)
+
+
+# --- split screen (T20, R104/R127/R128) --------------------------------------------
+
+
+def split_page(user, minor_units, currency, boot_extra=None):
+    if user is None:
+        return page("Split", signed_out_home(), active="/split", boot={
+            "screen": "split", "signed_in": False})
+    boot = {"screen": "split", "signed_in": True, "handle": user["handle"],
+            "minor_units": minor_units, "currency": currency}
+    if boot_extra:
+        boot.update(boot_extra)
+    inputs = (
+        field("split-amount", "Total amount",
+              text_input("split-amount", value="30.00", inputmode="decimal",
+                         placeholder="30.00", required=True),
+              "Decimal amount, e.g. 30.00")
+        + field("split-handles", "Participants (handles, comma-separated, in order)",
+                text_input("split-handles", placeholder="ada, bob, cyd", required=True),
+                "The first handles get the extra minor units on uneven splits.")
+        + field("split-note", "Note (optional)",
+                text_input("split-note", placeholder="pizza night"))
+    )
+    body = (
+        '<section class="card"><h1 class="card-title">Split a bill</h1>'
+        '<form class="form" id="split-form" novalidate>%s%s%s</form>'
+        '<section class="preview" id="split-preview" data-testid="split-preview" hidden>'
+        "</section></section>"
+        % (inputs, error_banner("split-error"), submit_button("split-submit", "Split"))
+    )
+    return page("Split", body, active="/split", user=user, boot=boot)
