@@ -91,6 +91,8 @@ which is API-only); the `track` value in export stays `"pocketful"` exactly as s
   changes nothing.
 - **R36** (limit). `minor_units` is 0, 2 or 3 (fixtures use JPY=0, EUR=2, BHD=3).
 - **R37** (behaviour). No administrative balance endpoint exists (out of scope).
+- **R102** (behaviour). "Directory and user-search endpoints are out of scope." No endpoint
+  enumerates or searches users by anything other than an exact known handle.
 
 ## E. Errors (spec §5)
 
@@ -130,6 +132,10 @@ which is API-only); the `track` value in export stays `"pocketful"` exactly as s
   concurrent sessions.
 - **R55** (behaviour). Passwords stored via password-hashing function (bcrypt/scrypt/Argon2
   or equivalent); plaintext storage forbidden.
+
+- **R103** (behaviour). "Email verification, password reset, refresh tokens and
+  role-management endpoints are out of scope." No such endpoints exist; permissions
+  specified elsewhere (e.g. settlement operator) still apply without a role-management API.
 
 ## G. Idempotency (spec §7)
 
@@ -302,3 +308,16 @@ which is API-only); the `track` value in export stays `"pocketful"` exactly as s
   same field-level validation (R41) as a normal payment, with `malformed_request`/`validation_failed`
   precedence identical to §5. Reasoning: §11 says "Each uses ordinary payment amount, note and
   visibility rules."
+- **A6**. On any request, `401 unauthenticated` (bad/missing/unknown bearer token) is checked
+  before `400 missing_idempotency_key` when both would apply. Reasoning: the spec states the
+  idempotency-key check is resolved "after the body has parsed as a JSON object and the caller
+  is authenticated" (§7), which orders authentication strictly before idempotency-key handling;
+  the spec is silent on auth-vs-key-presence ordering otherwise, so the stated order is read as
+  binding for both the presence check and the replay-resolution check.
+- **A7**. An `Idempotency-Key` header present but longer than 255 characters is rejected with
+  `422 validation_failed` (per the shared range in R44) rather than treated as a usable key; such
+  a request neither claims nor consults any `IdempotencyRecord` for that key value, so it can
+  never produce a false `409 idempotency_key_reuse` and never blocks a later, valid-length key.
+  Reasoning: R44 states the shared range applies "on every endpoint that takes" the field, and
+  the idempotency-key resolution rules (§7) only ever discuss "the key" after presence is
+  established — an out-of-range key is not a resolvable key.

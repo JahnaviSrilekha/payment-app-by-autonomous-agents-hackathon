@@ -97,26 +97,37 @@ atomically, so two concurrent signups for the same email can never both succeed 
 
 ## 5. Idempotent-write pipeline (shared by all 5 endpoints)
 
-1. Read request body bytes, parse as JSON. Not an object, or a known field of the wrong
-   JSON type → `400 malformed_request` (no lock needed yet).
+1. Read request body bytes, parse as JSON. **Only** "does not parse" or "parses but is not
+   a JSON object" is checked here → `400 malformed_request` (no lock needed yet). Per-field
+   JSON-type checks (e.g. `amount` is a string) are deferred to step 6 — they must not run
+   before the idempotency key is resolved, or a replay with a since-mutated/invalid body
+   would wrongly short-circuit to 400 instead of 409 (R63; fixed after tester completeness
+   review, see requirements.md A6/A7 and the stage-1 follow-up commit).
 2. Acquire `STATE_LOCK`.
-3. Authenticate: missing/malformed/unknown bearer token → `401 unauthenticated`.
-4. `Idempotency-Key` header absent/empty → `400 missing_idempotency_key`.
+3. Authenticate: missing/malformed/unknown bearer token → `401 unauthenticated` (this
+   precedes the idempotency-key check below — A6).
+4. `Idempotency-Key` header absent/empty → `400 missing_idempotency_key`. Present but over
+   255 characters → `422 validation_failed` (R44); neither case reads or writes an
+   `IdempotencyRecord` (A7 — an over-length key is never "claimed").
 5. Look up `IdempotencyRecord` for `(user_id, method, path, key)`.
    - Found, body equals stored body (parsed-JSON equality, key order/whitespace
-     irrelevant) → release lock, return stored `response_status→200 path kept as original
-     status is always 2xx on record, so literal replay status is 200` body unchanged.
+     irrelevant) → release lock, return the stored response body with status **200**
+     (the record always stores the *original* 2xx status, e.g. 201, for step 8/9's first-use
+     response, but every replay response is 200 regardless of that stored status).
    - Found, body differs → `409 idempotency_key_reuse`.
    - Not found → continue.
-6. Endpoint-specific field validation (422/404/403/409 as tabulated per endpoint).
+6. Endpoint-specific field validation, run now (not in step 1): wrong JSON type for a field
+   with endpoint-specific rules → that endpoint's 422 code; wrong type with no
+   endpoint-specific rule → `400 malformed_request`; then the rest of each endpoint's
+   422/404/403/409 table.
 7. Commit mutation.
 8. Store `IdempotencyRecord` with the **original** response status/body (e.g. 201) under the
    key.
 9. Release lock. Return the original status/body (the caller that created it gets 201; a
    later replayer gets 200 with the same body per step 5).
 
-A request that fails at step 3 or step 6 releases the lock without writing a record (frees
-the key, R59).
+A request that fails at step 3, step 4 or step 6 releases the lock without writing a record
+(frees the key, R59).
 
 ## 6. Rounding — `split_shares(amount, participant_handles)`
 
