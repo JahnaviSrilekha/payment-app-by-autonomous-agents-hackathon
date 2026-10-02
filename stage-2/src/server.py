@@ -208,7 +208,41 @@ route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
 route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
 route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
 route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_request)
-route("GET", r"/requests")(requests_endpoints.list_requests)
+@route("GET", r"/requests", public=True)
+def ep_requests_shared(ctx):
+    """R104/R105: the browser and the API share /requests. HTML for Accept:
+    text/html (cookie session), the stage-1 JSON list otherwise (bearer token,
+    identical behaviour to the pre-UI route)."""
+    if not ui.wants_html(ctx.headers):
+        with state_mod.STATE_LOCK:
+            user = auth.authenticate(ctx.headers)
+            return requests_endpoints.list_requests(user=user, service=state_mod.get(),
+                                                    ctx=ctx)
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            return 200, html_response(ui.requests_page(None, [], [],
+                                                       service["minor_units"],
+                                                       service["currency"]))
+        incoming = [requests_endpoints.request_response(
+                        service, service["requests"][rid])
+                    for rid in reversed(service["request_order"])
+                    if service["requests"][rid]["payer_id"] == user["id"]][:50]
+        outgoing = [requests_endpoints.request_response(
+                        service, service["requests"][rid])
+                    for rid in reversed(service["request_order"])
+                    if service["requests"][rid]["requester_id"] == user["id"]][:50]
+        return 200, html_response(ui.requests_page(user, incoming, outgoing,
+                                                   service["minor_units"],
+                                                   service["currency"]))
+route("POST", r"/splits", idempotent=True)(splits.create_split)
+route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
+route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
+    authorizations.capture_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
+route("GET", r"/authorizations")(authorizations.list_authorizations)
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
 route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)

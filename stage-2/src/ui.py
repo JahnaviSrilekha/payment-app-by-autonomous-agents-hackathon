@@ -346,3 +346,61 @@ def home_page(user, me, payments, boot_extra=None):
         + activity_section(payments, me["minor_units"], me["currency"])
     )
     return page("Home", body, active="/", user=user, boot=boot)
+
+
+# --- requests screen (T19, R104/R125/R126/R134) -----------------------------------
+
+
+def request_row(request, direction, minor_units, currency):
+    rid = request["request_id"]
+    buttons = []
+    if direction == "incoming" and request["status"] == "pending":
+        buttons.append('<button type="button" class="button button-primary"'
+                       ' data-testid="request-pay-%s">Pay</button>' % rid)
+        buttons.append('<button type="button" class="button button-danger"'
+                       ' data-testid="request-decline-%s">Decline</button>' % rid)
+    if direction == "outgoing" and request["status"] == "pending":
+        buttons.append('<button type="button" class="button button-quiet"'
+                       ' data-testid="request-cancel-%s">Cancel</button>' % rid)
+    return (
+        '<li class="row" data-testid="request-item-%s" data-status="%s">'
+        '<div class="row-main"><p class="row-title">%s <span class="status-chip'
+        ' status-%s">%s</span></p>'
+        '<p class="row-sub"><span data-testid="request-note-%s">%s</span></p></div>'
+        '<p class="row-money" data-testid="request-amount-%s" data-amount="%d">%s</p>'
+        "<div>%s</div></li>"
+        % (rid, request["status"],
+           esc("%s → %s" % (request["requester_handle"], request["payer_handle"])),
+           request["status"], esc(request["status"]), rid,
+           esc(request.get("note") or ""), rid, request["amount"],
+           esc(format_amount(request["amount"], minor_units, currency)),
+           "".join(buttons))
+    )
+
+
+def requests_section(requests, direction, minor_units, currency, incoming):
+    if not requests:
+        return ""
+    rows = "".join(request_row(r, direction, minor_units, currency) for r in requests)
+    title = "Incoming" if incoming else "Outgoing"
+    testid = "incoming-list" if incoming else "outgoing-list"
+    return ('<section class="card"><h2 class="card-title">%s</h2>'
+            '<ul class="list" data-testid="%s">%s</ul></section>'
+            % (title, testid, rows))
+
+
+def requests_page(user, incoming, outgoing, minor_units, currency, boot_extra=None):
+    if user is None:
+        return page("Requests", signed_out_home(), active="/requests", boot={
+            "screen": "requests", "signed_in": False})
+    boot = {"screen": "requests", "signed_in": True, "handle": user["handle"],
+            "minor_units": minor_units, "currency": currency}
+    if boot_extra:
+        boot.update(boot_extra)
+    empty = ('<p class="empty" data-testid="empty-requests">'
+             "No requests yet. Ask someone for money from the home screen.</p>"
+             if not incoming and not outgoing else "")
+    body = (requests_section(incoming, "incoming", minor_units, currency, True)
+            + requests_section(outgoing, "outgoing", minor_units, currency, False)
+            + empty + error_banner("request-error"))
+    return page("Requests", body, active="/requests", user=user, boot=boot)

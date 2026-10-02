@@ -555,6 +555,144 @@
     refresh();
   }
 
+  /* --- requests screen (T19) ------------------------------------------------------ */
+
+  function requestNode(request, direction, cfg) {
+    var rid = request.request_id;
+    var item = el("li", "row");
+    item.setAttribute("data-testid", "request-item-" + rid);
+    item.setAttribute("data-status", request.status);
+    var main = el("div", "row-main");
+    var title = el("p", "row-title",
+      esc(request.requester_handle) + " \u2192 " + esc(request.payer_handle));
+    var chip = el("span", "status-chip status-" + request.status, request.status);
+    title.appendChild(chip);
+    main.appendChild(title);
+    var sub = el("p", "row-sub");
+    sub.appendChild(span("request-note-" + rid, request.note || ""));
+    main.appendChild(sub);
+    item.appendChild(main);
+    var money = el("p", "row-money",
+      formatAmount(request.amount, cfg.minor_units, cfg.currency));
+    money.setAttribute("data-testid", "request-amount-" + rid);
+    money.setAttribute("data-amount", String(request.amount));
+    item.appendChild(money);
+    var actions = el("div");
+    if (direction === "incoming" && request.status === "pending") {
+      var pay = el("button", "button button-primary", "Pay");
+      pay.setAttribute("type", "button");
+      pay.setAttribute("data-testid", "request-pay-" + rid);
+      actions.appendChild(pay);
+      var decline = el("button", "button button-danger", "Decline");
+      decline.setAttribute("type", "button");
+      decline.setAttribute("data-testid", "request-decline-" + rid);
+      actions.appendChild(decline);
+    }
+    if (direction === "outgoing" && request.status === "pending") {
+      var cancel = el("button", "button button-quiet", "Cancel");
+      cancel.setAttribute("type", "button");
+      cancel.setAttribute("data-testid", "request-cancel-" + rid);
+      actions.appendChild(cancel);
+    }
+    item.appendChild(actions);
+    return item;
+  }
+
+  function renderRequests(incoming, outgoing, cfg) {
+    var sections = [
+      ["incoming-list", incoming, "incoming"],
+      ["outgoing-list", outgoing, "outgoing"]
+    ];
+    var anyRows = incoming.length + outgoing.length > 0;
+    sections.forEach(function (entry) {
+      var testid = entry[0];
+      var rows = entry[1];
+      var direction = entry[2];
+      var host = fieldOf(testid);
+      if (!host) {
+        return;
+      }
+      while (host.firstChild) {
+        host.removeChild(host.firstChild);
+      }
+      rows.forEach(function (r) {
+        host.appendChild(requestNode(r, direction, cfg));
+      });
+    });
+    var emptyHost = fieldOf("empty-requests");
+    if (anyRows && emptyHost) {
+      emptyHost.remove();
+    }
+  }
+
+  function initRequests(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var guard = createRefreshGuard();
+    var cfg = boot;
+
+    async function refresh() {
+      var seq = guard.issue();
+      var results = await Promise.allSettled([
+        apiFetch("GET", "/requests?direction=incoming&limit=50"),
+        apiFetch("GET", "/requests?direction=outgoing&limit=50")
+      ]);
+      if (!guard.arrive(seq)) {
+        return;
+      }
+      var incoming = results[0].status === "fulfilled"
+        && results[0].value.status === 200
+        ? (results[0].value.body.requests || []) : null;
+      var outgoing = results[1].status === "fulfilled"
+        && results[1].value.status === 200
+        ? (results[1].value.body.requests || []) : null;
+      if (incoming !== null && outgoing !== null) {
+        renderRequests(incoming, outgoing, cfg);
+      }
+    }
+
+    document.querySelector("main").addEventListener("click", async function (event) {
+      var button = event.target.closest("button");
+      if (!button) {
+        return;
+      }
+      var testid = button.getAttribute("data-testid") || "";
+      var match = testid.match(/^request-(pay|decline|cancel)-(.+)$/);
+      if (!match) {
+        return;
+      }
+      var action = match[1];
+      var rid = match[2];
+      removeMessage("request-error");
+      var outcome;
+      try {
+        if (action === "pay") {
+          var key = await deriveKey("request-pay",
+            [rid, val("request-visibility") || "public"]);
+          outcome = await apiFetch("POST", "/requests/" + rid + "/pay", {}, key);
+        } else {
+          outcome = await apiFetch("POST", "/requests/" + rid + "/" + action);
+        }
+      } catch (err) {
+        outcome = null;
+      }
+      if (outcome === null) {
+        showMessage("request-error", "uncertain",
+          "We couldn't confirm that action — it may not have gone through.");
+        return;
+      }
+      if (classifyOutcome(outcome.status) !== "success") {
+        // R134: a request cancelled elsewhere while its pay button is visible
+        showMessage("request-error", "error",
+          errorMessage(outcome.body, "That request is no longer available"));
+      }
+      await refresh(); // the stale button disappears on the resulting refresh
+    });
+
+    refresh();
+  }
+
   /* --- auth screens (T17) -------------------------------------------------------- */
 
   function initAuth(boot) {
@@ -618,6 +756,8 @@
     renderWallet: renderWallet,
     renderFeed: renderFeed,
     initHome: initHome,
-    initAuth: initAuth
+    initAuth: initAuth,
+    renderRequests: renderRequests,
+    initRequests: initRequests
   };
 });
