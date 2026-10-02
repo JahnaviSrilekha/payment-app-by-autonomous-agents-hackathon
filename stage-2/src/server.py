@@ -171,6 +171,7 @@ route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
 route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
     authorizations.capture_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
 
 
 def run_idempotent(ctx, user, fn):

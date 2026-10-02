@@ -186,3 +186,27 @@ def _get(service, authz_id):
     return service["authorizations"].get(authz_id)
 
 
+# --- POST /authorizations/{id}/void (no key, like decline/cancel) -----------------
+
+
+def void_authorization(ctx, user, service):
+    """POST /authorizations/{id}/void — only the payer may void (R176). Voiding an
+    already-voided authorization is 200 with the current state (R177); a captured or
+    clock-expired one is 409 authorization_not_open (R178). Voiding a partially
+    captured open authorization releases only the remainder and preserves the capture
+    records (R173)."""
+    authz = _get(service, ctx.params.get("id"))
+    if authz is None:
+        raise errors.not_found("no such authorization")
+    if authz["from_user_id"] != user["id"]:
+        raise errors.forbidden("only the payer may void this authorization")
+    now = state_mod.now_utc()
+    if authz["status"] == "voided":
+        return 200, authorization_response(service, authz, now)
+    if authz["status"] == "captured" \
+            or state_mod.effective_status(authz, now) == "expired":
+        raise authorization_not_open()
+    authz["status"] = "voided"
+    return 200, authorization_response(service, authz, now)
+
+
