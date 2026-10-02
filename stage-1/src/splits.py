@@ -25,13 +25,12 @@ def create_split(ctx, user, service):
     amount = state_mod.parse_amount(body["amount"])
     state_mod.check_amount_range(amount)
     participants = body.get("participant_handles")
-    if participants is None and "participant_handles" in body:
-        # explicit null is a wrong JSON type
-        raise errors.malformed_request("participant_handles must be an array")
     if participants is None:
+        # absent selects the required-field error; explicit null is a wrong JSON type
+        # for a field with endpoint-specific rules -> 422 (R41, matching get_note)
         raise errors.validation_failed("participant_handles is required")
     if not isinstance(participants, list):
-        raise errors.malformed_request("participant_handles must be an array")
+        raise errors.validation_failed("participant_handles must be an array")
     if len(participants) == 0:
         raise errors.validation_failed("participant_handles must not be empty")
     if len(set(participants)) != len(participants):

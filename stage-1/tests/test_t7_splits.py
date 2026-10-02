@@ -190,7 +190,11 @@ class TestT7SplitsHttp(unittest.TestCase):
             ({"amount": 5, "participant_handles": []}, 422, "validation_failed", "empty"),
             ({"amount": 5, "participant_handles": ["bob", "bob"]}, 422, "validation_failed", "dup"),
             ({"amount": 5, "participant_handles": ["ghost"]}, 404, "not_found", "unknown"),
-            ({"amount": 5, "participant_handles": "bob"}, 400, "malformed_request", "not array"),
+            # participant_handles carries endpoint-specific rules (R79), so wrong JSON
+            # types, including explicit null, are 422 validation_failed (R41)
+            ({"amount": 5, "participant_handles": "bob"}, 422, "validation_failed", "not array"),
+            ({"amount": 5, "participant_handles": None}, 422, "validation_failed", "null"),
+            ({"amount": 5}, 422, "validation_failed", "missing"),
             # field validation (note length) precedes the resource check (unknown handle),
             # matching POST /payments and POST /requests
             ({"amount": 100, "participant_handles": ["nobody"], "note": "x" * 201}, 422,
