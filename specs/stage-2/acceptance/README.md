@@ -90,12 +90,12 @@ Requirement ids with no test — both are permissions, not behaviour:
   `has_more` (R183). Any other list key fails the suite and should be
   reconciled with @coordinator.
 - **TA-2.** Combined-error precedence for `POST /authorizations` and
-  `.../capture` follows the requirements' error tables read top-to-bottom
-  (R163/R175 + assumption A8), e.g. insufficient `available` beats an unknown
-  `to_handle`, and `authorization_expired` beats `forbidden`/exceeds. NOTE:
-  design.md §13 orders validation differently (404/403 before state checks) —
-  flagged to @coordinator; if design order is adjudicated canonical, only the
-  two `*_error_precedence` tests change.
+  `.../capture` follows design.md §13 as adjudicated by @coordinator (commit
+  3b3d8338): create path = amount shape → note shape → visibility shape →
+  self_payment → unknown handle → insufficient_funds last; capture path =
+  unknown authorization → forbidden → authorization_expired →
+  authorization_not_open → amount shape → capture_exceeds last
+  (`authz_create_error_precedence`, `capture_error_precedence`).
 - **TA-3.** A seeded `captured` authorization's `captured_amount` is
   unspecified in the fixture model; only `remaining_amount == 0` and
   non-holding are asserted for it.

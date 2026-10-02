@@ -260,21 +260,31 @@ def authz_create_errors(ctx):
 
 @test("authz_create_error_precedence", "R163")
 def authz_create_error_precedence(ctx):
-    """R163 table read as precedence (A8): available first, unknown handle last."""
+    """Canonical order (design.md section 13, mirroring stage-1 create_payment):
+    amount shape -> note shape -> visibility shape -> self_payment ->
+    unknown handle -> insufficient_funds last."""
     ada, bob, cyd, dee = fresh(ctx)
     eq(ada.pay("bob", 9500, key="drain").status, 201, "ada down to 500")
-    err_is(ada.authorize("ghost_handle", 1000, key="p1"), 409,
-           "insufficient_funds", "row1 insufficient_funds beats row5 not_found")
-    err_is(ada.authorize("ada", 1000, key="p2"), 409, "insufficient_funds",
-           "row1 beats row3 self_payment")
-    err_is(ada.authorize("bob", 1000, note="x" * 201, key="p3"), 409,
-           "insufficient_funds", "row1 beats row4 note")
-    err_is(ada.authorize("ghost_handle", 0, key="p4"), 422,
-           "validation_failed", "amount 0: row1 cannot fire, row2 does")
-    err_is(ada.authorize("ghost_handle", "5", key="p5"), 422,
-           "validation_failed", "non-integer amount -> row2")
-    err_is(ada.authorize("ada", 100, note="x" * 201, key="p6"), 422,
-           "self_payment", "row3 self_payment beats row4 note")
+    err_is(ada.authorize("ghost_handle", 0, key="p1"), 422,
+           "validation_failed", "amount shape beats unknown handle")
+    err_is(ada.authorize("ghost_handle", "5", key="p2"), 422,
+           "validation_failed", "non-integer amount beats unknown handle")
+    err_is(ada.authorize("ghost_handle", 1000, note="x" * 201, key="p3"), 422,
+           "validation_failed", "note shape beats unknown handle")
+    err_is(ada.authorize("ghost_handle", 1000, visibility="friends", key="p4"),
+           422, "validation_failed", "visibility shape beats unknown handle")
+    err_is(ada.authorize("ada", 1000, note="x" * 201, key="p5"), 422,
+           "validation_failed", "note shape beats self_payment")
+    err_is(ada.authorize("ghost_handle", 1000, key="p6"), 404,
+           "not_found", "unknown handle beats insufficient_funds")
+    err_is(ada.authorize("ada", 1000, key="p7"), 422, "self_payment",
+           "self_payment beats insufficient_funds")
+    err_is(ada.authorize("bob", 1000, note="x" * 201, key="p8"), 422,
+           "validation_failed", "note shape beats insufficient_funds")
+    err_is(ada.authorize("bob", 1000, visibility="friends", key="p9"), 422,
+           "validation_failed", "visibility shape beats insufficient_funds")
+    err_is(ada.authorize("bob", 1000, key="p10"), 409, "insufficient_funds",
+           "insufficient_funds is checked last")
 
 
 @test("authz_create_idempotency", "R152 R161 R59 R60 R61 R57 R44")
@@ -483,13 +493,32 @@ def capture_errors(ctx):
 
 @test("capture_error_precedence", "R175")
 def capture_error_precedence(ctx):
-    """R175 table read as precedence (A8): expired beats exceeds/forbidden."""
+    """Canonical order (design.md section 13, mirroring the stage-1 id-path
+    request endpoints): 404 -> 403 -> authorization_expired ->
+    authorization_not_open -> amount shape -> capture_exceeds last."""
+    ada, bob, cyd, dee = fresh(ctx)
+    aid = ada.authorize("bob", 1000, key="pc0").json["authorization_id"]
+    err_is(cyd.capture("a_nope", {"amount": 99999}, key="pc1"), 404,
+           "not_found", "unknown authorization beats everything, for any caller")
+    err_is(ada.capture(aid, {"amount": 99999}, key="pc2"), 403,
+           "forbidden", "forbidden (payer) beats state and amount checks")
+    err_is(cyd.capture(aid, {"amount": 0}, key="pc3"), 403,
+           "forbidden", "forbidden (neither party) beats amount shape")
+
     ada, bob, cyd, dee = seeded(ctx, fixture(four_users(), authorizations=[
         fx_auth("a_past", "u_ada", "u_bob", 800, "open", -7200)]))
-    err_is(bob.capture("a_past", {"amount": 99999}, key="pp1"), 409,
-           "authorization_expired", "expired beats capture_exceeds_authorization")
-    err_is(ada.capture("a_past", {}, key="pp2"), 409, "authorization_expired",
-           "expired beats forbidden (caller is the payer, not the receiver)")
+    err_is(bob.capture("a_past", {"amount": 99999}, key="pc4"), 409,
+           "authorization_expired",
+           "expired beats not_open/amount/exceeds for the receiver")
+    err_is(ada.capture("a_past", {}, key="pc5"), 403, "forbidden",
+           "forbidden beats expired for a non-receiver caller")
+
+    ada, bob, cyd, dee = fresh(ctx)
+    aid = ada.authorize("bob", 500, key="pc6").json["authorization_id"]
+    err_is(bob.capture(aid, {"amount": "5"}, key="pc7"), 422,
+           "validation_failed", "amount shape beats capture_exceeds_authorization")
+    err_is(bob.capture(aid, {"amount": 501}, key="pc8"), 422,
+           "capture_exceeds_authorization", "capture_exceeds is checked last")
 
 
 @test("capture_idempotency", "R166 R152 R59 R60 R61 R174")
