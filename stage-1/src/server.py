@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import auth
 import errors
 import idempotency
+import payments
+import requests as requests_endpoints
 import state as state_mod
 import testctl
 
@@ -37,6 +39,7 @@ class Ctx:
         self.parsed = parsed
         self.headers = headers
         self.query = query
+        self.params = {}
 
 
 class Route:
@@ -64,9 +67,10 @@ def route(method, pattern, public=False, idempotent=False):
 def _find_route(method, path):
     found = None
     for candidate in ROUTES:
-        if candidate.match(path):
+        match = candidate.match(path)
+        if match:
             if candidate.method == method:
-                return candidate
+                return candidate, match
             found = candidate
     if found is not None:
         raise errors.method_not_allowed()
@@ -141,6 +145,17 @@ def ep_import(ctx):
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
     return 200, auth.me_response(user)
+
+
+# --- payments, activity, requests (batches 2+) ---------------------------------
+
+route("POST", r"/payments", idempotent=True)(payments.create_payment)
+route("GET", r"/activity")(payments.activity)
+route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
+route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
+route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
+route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_request)
+route("GET", r"/requests")(requests_endpoints.list_requests)
 
 
 def run_idempotent(ctx, user, fn):
@@ -220,8 +235,9 @@ class Handler(BaseHTTPRequestHandler):
                 state_mod.require_object(parsed)
             else:
                 parsed = None
-            route = _find_route(method, path)
+            route, match = _find_route(method, path)
             ctx = Ctx(method, path, parsed, self.headers, query)
+            ctx.params = match.groupdict() if match else {}
             status, payload = self._run(route, ctx)
             if payload is None:
                 self._send_empty(status)

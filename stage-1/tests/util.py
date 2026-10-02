@@ -112,6 +112,14 @@ def reset(client, fixture=None):
     assert status == 204, (status, payload)
 
 
+def reset_clean(client):
+    """Same seeded users as the spec fixture, but no seeded payments/requests."""
+    fixture = spec_fixture()
+    fixture["payments"] = []
+    fixture["requests"] = []
+    reset(client, fixture)
+
+
 def concurrent(count, target):
     """Run target(i) in `count` threads; return list of results in index order."""
     results = [None] * count
