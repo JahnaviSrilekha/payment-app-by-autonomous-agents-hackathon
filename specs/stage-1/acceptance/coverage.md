@@ -1,4 +1,4 @@
-# Pocketful stage 1 — acceptance coverage table
+# Pocketful stage 1 — acceptance coverage table (R1-R103)
 
 Black-box HTTP suite. Run with one command against a running service:
 
@@ -11,7 +11,7 @@ sh specs/stage-1/acceptance/run.sh --docker 9090
 Options: `--filter SUBSTR` (subset), `--wait N` (health wait), `--list`.
 
 Every test derives from the stage-1 spec text (§1-§11) and the numbered requirements
-R1-R101 — never from the implementation or the supplied checks. Tests run sequentially,
+R1-R103 — never from the implementation or the supplied checks. Tests run sequentially,
 each after its own `POST /_test/reset`; concurrency happens inside tests. Endpoint groups
 not yet merged are probed first and their tests are skipped with a reason.
 
@@ -125,8 +125,8 @@ not yet merged are probed first and their tests are skipped with a reason.
 
 - A2 (from requirements.md): entry errors are per-entry checks in input order, before the
   collective affordability check — r96 asserts this directly.
-- 401 precedes 400 missing_idempotency_key when both apply (design §5 order; spec silent) —
-  asserted in r39 via no-token-no-key ordering cases.
+- A6 (requirements.md): 401 unauthenticated precedes 400 missing_idempotency_key when both
+  apply — asserted in r53 (POST /payments with neither token nor key → 401 unauthenticated).
 - Paying a 0-share request would be an amount-0 payment (422 per payment rules); the spec
   only claims the request is created, so r83_zero_share_still_requests asserts creation only.
 - Export body compared as parsed JSON where possible; byte-compare used only for
