@@ -142,11 +142,24 @@ def reset_seeded_statuses(ctx):
     eq(cyd.me()["held"], 0, "voided holds nothing")
     eq(dee.me()["held"], 0, "expired holds nothing")
     by_id = {a["authorization_id"]: a for a in ada.list_auths()}
+    expect(set(by_id) == {"a_o", "a_e"},
+           f"ada (party to a_o, a_e only) sees exactly those: {sorted(by_id)}")
+    bob_rows = {a["authorization_id"]: a for a in bob.list_auths()}
+    expect(set(bob_rows) == {"a_o", "a_c"},
+           f"bob sees a_o, a_c: {sorted(bob_rows)}")
+    cyd_rows = {a["authorization_id"]: a for a in cyd.list_auths()}
+    expect(set(cyd_rows) == {"a_c", "a_v"},
+           f"cyd (receiver of a_c, payer of a_v) sees those: {sorted(cyd_rows)}")
+    dee_rows = {a["authorization_id"]: a for a in dee.list_auths()}
+    expect(set(dee_rows) == {"a_v", "a_e"},
+           f"dee (receiver of a_v, payer of a_e) sees those: {sorted(dee_rows)}")
     for aid, status in (("a_o", "open"), ("a_c", "captured"),
                         ("a_v", "voided"), ("a_e", "expired")):
-        expect(aid in by_id, f"seeded {aid} listed")
-        eq(by_id[aid]["status"], status, f"{aid} status")
-        eq(by_id[aid]["remaining_amount"], 2000 if status == "open" else 0,
+        owner = {"a_o": by_id, "a_c": bob_rows, "a_v": cyd_rows,
+                 "a_e": dee_rows}[aid]
+        expect(aid in owner, f"seeded {aid} listed for its party")
+        eq(owner[aid]["status"], status, f"{aid} status")
+        eq(owner[aid]["remaining_amount"], 2000 if status == "open" else 0,
            f"{aid} remaining_amount")
 
 
@@ -233,10 +246,15 @@ def authz_create_errors(ctx):
        "boundary: amount == available ok")
 
     ada2, *_ = fresh(ctx)
-    for bad in (0, -1, 1000000001, "5", True, 1.5):
+    for bad in (0, -1, "5", True, 1.5):
         err_is(ada2.authorize("bob", bad, key=f"e2-{bad!r}"), 422,
                "validation_failed", f"amount {bad!r}")
-    eq(ada2.authorize("bob", 1000000000, key="e2max").status, 201,
+    ctx.reset(fixture([fx_user("u_rich", "rich", 1000000000),
+                       fx_user("u_bob", "bob", 0)]))
+    rich = User(ctx.api, "rich").login()
+    err_is(rich.authorize("bob", 1000000001, key="e2-over"), 422,
+           "validation_failed", "amount 1000000001")
+    eq(rich.authorize("bob", 1000000000, key="e2max").status, 201,
        "boundary 1e9 ok when funded")
 
     ada3, *_ = fresh(ctx)
@@ -248,9 +266,14 @@ def authz_create_errors(ctx):
        "note 200 chars ok")
 
     ada4, *_ = fresh(ctx)
-    for v in ("Public", "friends", "", 1, None):
+    for v in ("Public", "friends", "", 1):
         err_is(ada4.authorize("bob", 50, visibility=v, key=f"e5-{v!r}"), 422,
                "validation_failed", f"visibility {v!r}")
+    err_is(ada4.api.post("/authorizations",
+                         body={"to_handle": "bob", "amount": 50,
+                               "visibility": None},
+                         token=ada4.token, key="e5-null"), 422,
+           "validation_failed", "explicit null visibility")
     err_is(ada4.authorize("nobody", 50, key="e6"), 404, "not_found",
            "unknown handle")
     body = {"to_handle": "bob", "amount": 60, "bogus": 1}
@@ -409,8 +432,8 @@ def capture_extended_mode(ctx):
     eq(a["captured_amount"], 700, "cumulative captured_amount")
     eq(a["remaining_amount"], 1300, "remainder still held")
     m = ada.me()
-    eq((m["held"], m["available"], m["total"]), (1300, 8700, 10000),
-       "remainder stays held, total unmoved")
+    eq((m["held"], m["available"], m["total"]), (1300, 8000, 9300),
+       "700 moved, remainder held: available == total - held")
     eq(bob.me()["total"], 10700, "receiver got 700")
     r2 = bob.capture(aid, {"amount": 600, "final": False}, key="x3")
     eq(r2.status, 201, "second nonfinal capture")
@@ -769,9 +792,9 @@ def stage1_paths_hold_free_and_marked(ctx):
     eq(ada.me()["held"], 0, "a payment leaves no intermediate hold")
     rq = bob.api.post("/requests", body={"payer_handle": "ada", "amount": 300},
                       token=bob.token, key="s2").json
-    p2 = bob.api.post(f"/requests/{rq['request_id']}/pay",
+    p2 = ada.api.post(f"/requests/{rq['request_id']}/pay",
                       body={"visibility": "public"},
-                      token=bob.token, key="s3").json
+                      token=ada.token, key="s3").json
     eq(p2["authorization_id"], None, "request-pay payment authorization_id null")
     eq(ada.me()["held"], 0, "request-pay leaves no hold")
     st = ctx.api.post("/settlements", body={"transfers": [
