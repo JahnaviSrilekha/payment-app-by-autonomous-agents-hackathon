@@ -22,15 +22,19 @@ def payment_response(service, payment):
         "note": payment["note"],
         "visibility": payment["visibility"],
         "request_id": payment["request_id"],
+        "authorization_id": payment.get("authorization_id"),
         "settlement_id": payment["settlement_id"],
         "created_at": payment["created_at"],
     }
 
 
 def append_payment(service, from_user_id, to_user_id, amount, note, visibility,
-                   request_id=None, settlement_id=None, created_at=None):
+                   request_id=None, settlement_id=None, created_at=None,
+                   authorization_id=None):
     """One atomic debit+credit inside the caller's STATE_LOCK acquisition: the ledger
-    append and both balance mutations commit together or not at all (R23, R67)."""
+    append and both balance mutations commit together or not at all (R23, R67).
+    authorization_id is set only on capture-created payments (R167); request_id and
+    authorization_id are never both non-null (A9)."""
     if created_at is None:
         created_at = state_mod.now_rfc3339()
     payment = {
@@ -42,6 +46,7 @@ def append_payment(service, from_user_id, to_user_id, amount, note, visibility,
         "note": note,
         "visibility": visibility,
         "request_id": request_id,
+        "authorization_id": authorization_id,
         "settlement_id": settlement_id,
         "created_at": created_at,
         "seq": state_mod.next_seq(service),

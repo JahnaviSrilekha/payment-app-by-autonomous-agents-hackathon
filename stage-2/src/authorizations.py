@@ -13,9 +13,26 @@ from datetime import timedelta
 
 import errors
 import ids
+import payments
 import state as state_mod
 
 AUTHORIZATION_STATUSES = state_mod.AUTHORIZATION_STATUSES
+
+
+def authorization_not_open():
+    return errors.ApiError(409, "authorization_not_open",
+                           "authorization is not open")
+
+
+def authorization_expired():
+    return errors.ApiError(409, "authorization_expired",
+                           "authorization has expired")
+
+
+def capture_exceeds_authorization():
+    return errors.ApiError(422, "capture_exceeds_authorization",
+                           "capture exceeds the remaining authorized amount")
+
 
 
 def authorization_not_open():
@@ -109,3 +126,63 @@ def create_authorization(ctx, user, service):
     service["authorization_order"].append(authz["id"])
     return 201, authorization_response(service, authz,
                                        state_mod.parse_rfc3339(created_at))
+
+
+# --- POST /authorizations/{id}/capture (idempotent path 7) -----------------------
+
+
+def capture_authorization(ctx, user, service):
+    """POST /authorizations/{id}/capture — only the receiver may capture (R165).
+    Validation order (R175, A8, design.md section 13): 404 exists, 403 receiver,
+    409 authorization_expired before the generic 409 authorization_not_open (an
+    expired hold never reports the wrong code), then amount shape, then
+    capture_exceeds_authorization against the live remainder, last.
+
+    Commit is one critical-section write: append the capture's payment, bump
+    captured_amount, and close the authorization if this capture was final or it
+    exhausts the remainder — so the payment moving and the remainder releasing are
+    observable in the same instant (R168)."""
+    authz = _get(service, ctx.params.get("id"))
+    if authz is None:
+        raise errors.not_found("no such authorization")
+    if authz["to_user_id"] != user["id"]:
+        raise errors.forbidden("only the receiver may capture this authorization")
+    now = state_mod.now_utc()
+    if state_mod.effective_status(authz, now) == "expired":
+        raise authorization_expired()
+    if authz["status"] != "open":
+        raise authorization_not_open()
+    body = ctx.parsed
+    remaining = state_mod.remaining_amount(authz, now)
+    if "amount" in body:
+        amount = state_mod.parse_amount(body["amount"])
+        if amount < 1:
+            raise errors.validation_failed("amount must be at least 1")
+    else:
+        amount = remaining
+    if "final" in body and not isinstance(body["final"], bool):
+        raise errors.validation_failed("final must be a boolean")
+    final = body.get("final", True)
+    if amount > remaining:
+        raise capture_exceeds_authorization()
+    payment = payments.append_payment(
+        service,
+        from_user_id=authz["from_user_id"],
+        to_user_id=authz["to_user_id"],
+        amount=amount,
+        note=authz["note"],
+        visibility=authz["visibility"],
+        authorization_id=authz["id"],
+    )
+    authz["captured_amount"] += amount
+    authz["payment_ids"].append(payment["id"])
+    if final or authz["captured_amount"] >= authz["amount"]:
+        authz["status"] = "captured"
+    return 201, payments.payment_response(service, payment)
+
+
+
+def _get(service, authz_id):
+    return service["authorizations"].get(authz_id)
+
+
