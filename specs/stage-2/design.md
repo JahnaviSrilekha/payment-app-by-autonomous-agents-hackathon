@@ -85,10 +85,13 @@ that reads or writes service state acquires [`STATE_LOCK`] for the full duration
 `POST /authorizations` and `POST /authorizations/{id}/capture` are idempotent paths 6 and 7,
 and follow stage-1 design §5 verbatim, with their own per-endpoint validation at step 6:
 
-- **`POST /authorizations`** step-6 order (R163, A8): `amount` shape (`422
-  validation_failed` if not an integer in `[1, 1_000_000_000]`) → `to_handle` known (`404
-  not_found`) → `to_handle == caller` (`422 self_payment`) → `note`/`visibility` shape (`422
-  validation_failed`) → `available(caller) >= amount` (`409 insufficient_funds`). Commit:
+- **`POST /authorizations`** step-6 order (R163, A8 — mirrors `create_payment` in
+  `stage-1/src/payments.py` field-for-field, since stage-1's own table lists
+  `insufficient_funds` first yet checks it last in the real implementation): `amount` shape
+  (`422 validation_failed` if not an integer in `[1, 1_000_000_000]`) → `note` shape → `visibility`
+  shape (`422 validation_failed`) → `to_handle == caller` (`422 self_payment`) → `to_handle`
+  known (`404 not_found`) → `available(caller) >= amount` (`409 insufficient_funds`, last —
+  needs a shape-valid amount already). Commit:
   insert the `Authorization` row (`status: "open"`, `captured_amount: 0`, `payment_ids: []`,
   `expires_at = created_at + authorization_ttl_seconds`); no wallet mutation (a hold moves no
   money, R144).

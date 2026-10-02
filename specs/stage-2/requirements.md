@@ -54,8 +54,8 @@ changes.
   `login-submit`; `auth-error` (present only when there is an error); `current-user` (visible
   on every screen when signed in, text contains the display name); `current-handle` (text is
   exactly the caller's handle, no `@`, no surrounding words); `logout-button`.
-- **R114** (behaviour). Signup/login call stage-1's `POST /signup` / `POST /login` (stage-1.md
-  §5) and surface their error cases through `auth-error`.
+- **R114** (behaviour). Signup/login call stage-1's `POST /auth/signup` / `POST /auth/login`
+  (stage-1.md §6, R46/R47) and surface their error cases through `auth-error`.
 
 ## D. Balance and pay — `/`
 
@@ -253,13 +253,13 @@ changes.
   `from_handle`, `to_user_id`, `to_handle`, `amount`, `captured_amount` (`0`), `currency`,
   `note`, `visibility`, `status: "open"`, `expires_at`, `payment_id: null`, `created_at`.
   `expires_at` is `created_at` plus `authorization_ttl_seconds`.
-- **R163** (error). Error precedence table: `available < amount` → `409 insufficient_funds`;
+- **R163** (error). Error cases (table order is enumeration, not precedence — A8):
+  `available < amount` → `409 insufficient_funds`;
   `amount` below 1, above 1000000000, or not an integer → `422 validation_failed`;
   `to_handle` equal to caller's own handle → `422 self_payment`; `note` over 200 chars or
   `visibility` not `public`/`private` → `422 validation_failed`; unknown `to_handle` →
-  `404 not_found`. (Row order in the spec table is the precedence order, consistent with
-  stage-1 §5's payment error precedence — recorded as A8 below since the spec states the
-  table but not explicitly "in this order.")
+  `404 not_found`. Actual precedence (A8): `amount` shape → `note` shape → `visibility`
+  shape → `self_payment` → unknown-handle `404` → `insufficient_funds` (last).
 - **R164** (behaviour). "An open authorisation is not a feed item and never appears in
   `GET /activity`."
 
@@ -299,11 +299,15 @@ changes.
 - **R174** (compatibility). "New fields do not change idempotency body equality" — adding
   `final`/omitting it, or any new response field, never affects R166's body-equality replay
   check.
-- **R175** (error). Error table: authorisation not `open` → `409 authorization_not_open`;
+- **R175** (error). Error cases (table order is enumeration, not precedence — A8):
+  authorisation not `open` → `409 authorization_not_open`;
   `expires_at` at or before now → `409 authorization_expired`; `amount` above uncaptured
   remainder → `422 capture_exceeds_authorization`; `amount` below 1 or not an integer →
   `422 validation_failed`; caller is not the receiver → `403 forbidden`; unknown authorisation
-  → `404 not_found`. (Row order is the stated precedence order — A8.)
+  → `404 not_found`. Actual precedence (A8): unknown-id `404` (first — the path-identified
+  resource must exist before anything else is checked) → `forbidden` `403` → `authorization_expired`
+  `409` → `authorization_not_open` `409` → `amount` shape `422` → `capture_exceeds_authorization`
+  `422` (last — needs a shape-valid amount already).
 
 ## P. `POST /authorizations/{id}/void`
 
@@ -370,11 +374,25 @@ changes.
 
 - **A8**. The spec's error tables for `POST /authorizations` and
   `POST /authorizations/{id}/capture` (R163, R175) state cases but not explicitly "in this
-  order"; read as precedence order top-to-bottom, consistent with stage-1 §5's payment
-  validation order and with how `capture_exceeds_authorization` (checked against remaining,
-  R171) must be evaluated before a generic `validation_failed` on the same field would ever
-  be reached. Reasoning: stage-1's established pattern (specific business-rule 409/422s
-  before generic shape checks) and internal consistency of the capture table.
+  order," and their row order is **not** read as precedence — the verified stage-1
+  implementation of the structurally identical `POST /payments` table
+  (`stage-1/src/payments.py:create_payment`) lists `insufficient_funds` as its first table
+  row (stage-1.md §8) but actually checks it **last**, after every shape check and after
+  `self_payment`/`not_found`, because an amount must already be shape-valid before it can be
+  compared to a balance. Precedence instead mirrors that real, tested code path:
+  - `POST /authorizations` mirrors `create_payment` field-for-field: `amount` shape → `note`
+    shape → `visibility` shape → `self_payment` → unknown-`to_handle` `404` →
+    `insufficient_funds` (last).
+  - `POST /authorizations/{id}/capture` mirrors the id-path-resource pattern in
+    `stage-1/src/requests.py` (`pay_request`/`decline_request`/`cancel_request`: unknown-id
+    `404` first, then `forbidden`, then the state check) extended with the capture's own
+    amount: unknown authorization `404` → `forbidden` → `authorization_expired` →
+    `authorization_not_open` → `amount` shape `422` → `capture_exceeds_authorization` (last,
+    since it needs a shape-valid, already-known-remaining amount).
+  Reasoning: this is the only implemented and verified precedent for "a spec error table
+  whose row order is not its check order" in this codebase; reusing it is more defensible
+  than inventing a new, untested ordering convention for stage 2 alone. (Flagged by the
+  tester's completeness review before batch 3 merged; adjudicated here.)
 - **A9**. "Authorizing a request is out of scope" (R150) is read as: no new endpoint
   combines a request with a hold; an authorization's `to_handle` may coincide with an
   existing request's counterparties, but the two features never interact (an authorization
