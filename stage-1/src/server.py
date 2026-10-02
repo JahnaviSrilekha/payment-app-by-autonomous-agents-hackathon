@@ -20,6 +20,7 @@ import errors
 import idempotency
 import payments
 import requests as requests_endpoints
+import settlements
 import state as state_mod
 import testctl
 
@@ -156,6 +157,7 @@ route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoint
 route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
 route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_request)
 route("GET", r"/requests")(requests_endpoints.list_requests)
+route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
 
 
 def run_idempotent(ctx, user, fn):
