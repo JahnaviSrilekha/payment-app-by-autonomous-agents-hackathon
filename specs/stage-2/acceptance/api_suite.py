@@ -859,7 +859,7 @@ def storm_mixed_concurrent(ctx):
 
     def worker(i):
         me = users[names[i % 4]]
-        other = users[(i + 1) % 4]
+        other = users[names[(i + 1) % 4]]
         suffix = f"s{i}-{rng.randrange(10**9)}"
         while time.time() < stop:
             op = rng.randrange(10)
