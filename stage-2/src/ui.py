@@ -206,3 +206,143 @@ def login_page(user=None):
     )
     return page("Log in", body, active="/login", user=user,
                 boot={"screen": "auth", "mode": "login"})
+
+
+# --- home: wallet, pay, request, activity feed (T18, R104/R108/R115-R124/R185-R187) -
+
+
+def wallet_section(me):
+    """R108/R185-R187: available is the headline number once holds exist; balance
+    (total) and held are visibly secondary; held absent at zero."""
+    held_html = ""
+    if me["held"] > 0:
+        held_html = (
+            '<p class="wallet-secondary"><span class="wallet-chip wallet-chip-held"'
+            ' data-testid="wallet-held" data-amount="%d">%s held</span></p>'
+            % (me["held"], esc(format_amount(me["held"], me["minor_units"],
+                                             me["currency"])))
+        )
+    return (
+        '<section class="card"><h1 class="card-title">Wallet</h1>'
+        '<div class="wallet">'
+        '<p class="muted">Available to spend</p>'
+        '<p class="wallet-headline" data-testid="wallet-available" data-amount="%d">%s</p>'
+        '<p class="wallet-secondary" data-testid="wallet-balance" data-amount="%d">'
+        "Total %s</p>%s"
+        '<button type="button" class="button button-secondary" data-testid="wallet-refresh"'
+        ' id="wallet-refresh">Refresh</button>'
+        "</div></section>"
+        % (me["available"],
+           esc(format_amount(me["available"], me["minor_units"], me["currency"])),
+           me["total"],
+           esc(format_amount(me["total"], me["minor_units"], me["currency"])),
+           held_html)
+    )
+
+
+def pay_form():
+    visibility = (
+        '<select class="select" id="pay-visibility" name="pay-visibility"'
+        ' data-testid="pay-visibility">'
+        '<option value="public">Public</option>'
+        '<option value="private">Private</option></select>'
+    )
+    inputs = (
+        field("pay-handle", "To (handle)",
+              text_input("pay-handle", placeholder="bob", required=True))
+        + field("pay-amount", "Amount",
+                text_input("pay-amount", value="15.00", inputmode="decimal",
+                           placeholder="15.00", required=True),
+              "Decimal amount, e.g. 15.00")
+        + field("pay-note", "Note (optional)",
+                text_input("pay-note", placeholder="coffee"))
+        + field("pay-visibility", "Visibility", visibility)
+    )
+    return (
+        '<section class="card"><h2 class="card-title">Pay someone</h2>'
+        '<form class="form" id="pay-form" novalidate>%s%s%s%s</form></section>'
+        % (inputs, error_banner("pay-error"), error_banner("pay-uncertain"),
+           submit_button("pay-submit", "Pay"))
+    )
+
+
+def request_form():
+    inputs = (
+        field("request-handle", "From (handle)",
+              text_input("request-handle", placeholder="bob", required=True))
+        + field("request-amount", "Amount",
+                text_input("request-amount", value="10.00", inputmode="decimal",
+                           placeholder="10.00", required=True),
+              "Decimal amount, e.g. 10.00")
+        + field("request-note", "Note (optional)",
+                text_input("request-note", placeholder="dinner"))
+    )
+    return (
+        '<section class="card"><h2 class="card-title">Request money</h2>'
+        '<form class="form" id="request-form" novalidate>%s%s%s</form></section>'
+        % (inputs, error_banner("request-error"),
+           submit_button("request-submit", "Request"))
+    )
+
+
+def feed_item(payment, minor_units, currency):
+    parties = "%s → %s" % (payment["from_handle"], payment["to_handle"])
+    private_tag = (' <span class="tag-private">private</span>'
+                   if payment["visibility"] == "private" else "")
+    note = payment.get("note") or ""
+    return (
+        '<li class="row" data-testid="activity-item-%s" data-visibility="%s">'
+        '<div class="row-main"><p class="row-title" data-testid="activity-parties-%s">'
+        "%s</p>"
+        '<p class="row-sub"><span data-testid="activity-note-%s">%s</span>%s</p></div>'
+        '<p class="row-money" data-testid="activity-amount-%s" data-amount="%d">%s</p>'
+        "</li>"
+        % (payment["payment_id"], payment["visibility"], payment["payment_id"],
+           esc(parties), payment["payment_id"], esc(note), private_tag,
+           payment["payment_id"], payment["amount"],
+           esc(format_amount(payment["amount"], minor_units, currency)))
+    )
+
+
+def activity_section(payments, minor_units, currency):
+    """R122: newest first, note element present even when empty, empty state when
+    nothing is visible (R124: stage-1 visibility already applied by GET /activity)."""
+    if not payments:
+        items = '<p class="empty" data-testid="empty-activity">No activity yet.</p>'
+        list_html = ""
+    else:
+        items = ""
+        list_html = ('<ul class="list" data-testid="activity-list">%s</ul>'
+                     % "".join(feed_item(p, minor_units, currency) for p in payments))
+    return (
+        '<section class="card"><h2 class="card-title">Activity</h2>%s%s</section>'
+        % (list_html, items)
+    )
+
+
+def signed_out_home():
+    return (
+        '<section class="card"><h1 class="card-title">Welcome to %s</h1>'
+        "<p>Sign in to see your balance, pay people and split bills.</p>"
+        '<p><a class="button button-primary" href="/login">Log in</a> '
+        '<a class="button button-secondary" href="/signup">Sign up</a></p></section>'
+        % esc(APP_NAME)
+    )
+
+
+def home_page(user, me, payments, boot_extra=None):
+    """The / screen. `me` is the GET /me payload; `payments` the visible feed
+    (newest first). Without a signed-in user it renders the welcome state."""
+    if user is None:
+        return page("Home", signed_out_home(), active="/", boot={
+            "screen": "home", "signed_in": False})
+    boot = {"screen": "home", "signed_in": True, "handle": user["handle"],
+            "minor_units": me["minor_units"], "currency": me["currency"]}
+    if boot_extra:
+        boot.update(boot_extra)
+    body = (
+        wallet_section(me)
+        + '<div class="grid-2">' + pay_form() + request_form() + "</div>"
+        + activity_section(payments, me["minor_units"], me["currency"])
+    )
+    return page("Home", body, active="/", user=user, boot=boot)

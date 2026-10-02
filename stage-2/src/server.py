@@ -219,6 +219,26 @@ route("GET", r"/authorizations")(authorizations.list_authorizations)
 
 # --- browser screens (design.md section 14; HTML only when Accept: text/html) -----
 
+@route("GET", r"/", public=True)
+def ep_home(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            return 200, html_response(ui.home_page(None, None, []))
+        me = auth.me_response(user)
+        now = state_mod.now_utc()
+        me["total"] = user["balance"]
+        me["held"] = state_mod.held(user["id"], service, now)
+        me["available"] = state_mod.available(user["id"], service, now)
+        feed = [payments.payment_response(service, p)
+                for p in reversed(service["payments"])
+                if payments.visible_to(p, user["id"])][:50]
+        return 200, html_response(ui.home_page(user, me, feed))
+
+
 @route("GET", r"/signup", public=True)
 def ep_signup_screen(ctx):
     if not ui.wants_html(ctx.headers):

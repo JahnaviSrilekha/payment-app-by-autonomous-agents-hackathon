@@ -361,6 +361,200 @@
     }
   }
 
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    if (text !== undefined) {
+      node.textContent = text;
+    }
+    return node;
+  }
+
+  function span(testid, text) {
+    var node = el("span", "", text);
+    node.setAttribute("data-testid", testid);
+    return node;
+  }
+
+  function feedNode(p, cfg) {
+    var item = el("li", "row");
+    item.setAttribute("data-testid", "activity-item-" + p.payment_id);
+    item.setAttribute("data-visibility", p.visibility);
+    var main = el("div", "row-main");
+    var title = el("p", "row-title",
+      esc(p.from_handle) + " \u2192 " + esc(p.to_handle));
+    title.setAttribute("data-testid", "activity-parties-" + p.payment_id);
+    main.appendChild(title);
+    var sub = el("p", "row-sub");
+    sub.appendChild(span("activity-note-" + p.payment_id, p.note || ""));
+    if (p.visibility === "private") {
+      sub.appendChild(el("span", "tag-private", "private"));
+    }
+    main.appendChild(sub);
+    item.appendChild(main);
+    var money = el("p", "row-money",
+      formatAmount(p.amount, cfg.minor_units, cfg.currency));
+    money.setAttribute("data-testid", "activity-amount-" + p.payment_id);
+    money.setAttribute("data-amount", String(p.amount));
+    item.appendChild(money);
+    return item;
+  }
+
+  function renderFeed(payments, cfg) {
+    var host = fieldOf("activity-list");
+    var emptyHost = fieldOf("empty-activity");
+    if (!host && !emptyHost) {
+      return;
+    }
+    if (!payments.length) {
+      if (host) {
+        host.remove();
+      }
+      if (!emptyHost) {
+        var empty = document.createElement("p");
+        empty.className = "empty";
+        empty.setAttribute("data-testid", "empty-activity");
+        empty.textContent = "No activity yet.";
+        (host && host.parentNode ? host.parentNode
+          : document.querySelector("main")).appendChild(empty);
+      }
+      return;
+    }
+    if (emptyHost) {
+      emptyHost.remove();
+    }
+    if (!host) {
+      host = document.createElement("ul");
+      host.className = "list";
+      host.setAttribute("data-testid", "activity-list");
+      document.querySelector("main").appendChild(host);
+    }
+    while (host.firstChild) {
+      host.removeChild(host.firstChild);
+    }
+    payments.forEach(function (p) {
+      host.appendChild(feedNode(p, cfg));
+    });
+  }
+
+  /* --- home screen (T18) -------------------------------------------------------- */
+
+  function initHome(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var guard = createRefreshGuard();
+    var cfg = boot;
+
+    async function refresh() {
+      var seq = guard.issue();
+      var results = await Promise.allSettled([
+        apiFetch("GET", "/me"),
+        apiFetch("GET", "/activity?limit=50")
+      ]);
+      if (!guard.arrive(seq)) {
+        return; // latest refresh wins (R131): a delayed earlier read is dropped
+      }
+      if (results[0].status === "fulfilled" && results[0].value.status === 200) {
+        renderWallet(results[0].value.body);
+      }
+      if (results[1].status === "fulfilled" && results[1].value.status === 200) {
+        renderFeed(results[1].value.body.payments || [], cfg);
+      }
+    }
+
+    document.getElementById("wallet-refresh").addEventListener("click", refresh);
+
+    var payForm = document.getElementById("pay-form");
+    payForm.querySelector('[data-testid="pay-submit"]').addEventListener("click",
+      async function () {
+        var values = {
+          to_handle: val("pay-handle"),
+          amount: val("pay-amount"),
+          note: val("pay-note"),
+          visibility: val("pay-visibility")
+        };
+        var parsed = parseDecimalAmount(values.amount, cfg.minor_units);
+        if (!parsed.ok) {
+          showMessage("pay-error", "error", parsed.error); // R119: no request sent
+          return;
+        }
+        removeMessage("pay-error");
+        removeMessage("pay-uncertain");
+        var body = {
+          to_handle: values.to_handle,
+          amount: parsed.minor,
+          note: values.note,
+          visibility: values.visibility
+        };
+        var key = await deriveKey("pay-form",
+          [values.to_handle, values.amount, values.note, values.visibility]);
+        var outcome;
+        try {
+          outcome = await apiFetch("POST", "/payments", body, key);
+        } catch (err) {
+          outcome = null; // lost response (R135): uncertain, retry with same key/body
+        }
+        if (outcome === null) {
+          showMessage("pay-uncertain", "uncertain",
+            "We couldn't confirm this payment — it may not have gone through."
+            + " Press Pay again without changing anything to check.");
+          return;
+        }
+        if (classifyOutcome(outcome.status) === "success") {
+          await refresh(); // R116: keep the pay form's values after success
+          return;
+        }
+        // refused (R133): show pay-error, refresh balance/feed, preserve inputs
+        showMessage("pay-error", "error", errorMessage(outcome.body, "Payment refused"));
+        await refresh();
+      });
+
+    var requestForm = document.getElementById("request-form");
+    requestForm.querySelector('[data-testid="request-submit"]')
+      .addEventListener("click", async function () {
+        var values = {
+          payer_handle: val("request-handle"),
+          amount: val("request-amount"),
+          note: val("request-note")
+        };
+        var parsed = parseDecimalAmount(values.amount, cfg.minor_units);
+        if (!parsed.ok) {
+          showMessage("request-error", "error", parsed.error); // R119
+          return;
+        }
+        removeMessage("request-error");
+        var body = {
+          payer_handle: values.payer_handle,
+          amount: parsed.minor,
+          note: values.note
+        };
+        var key = await deriveKey("request-form",
+          [values.payer_handle, values.amount, values.note]);
+        var outcome;
+        try {
+          outcome = await apiFetch("POST", "/requests", body, key);
+        } catch (err) {
+          outcome = null;
+        }
+        if (outcome === null) {
+          showMessage("request-error", "uncertain",
+            "We couldn't confirm this request — press Request again to check.");
+          return;
+        }
+        if (classifyOutcome(outcome.status) === "success") {
+          await refresh(); // R129: balance and feed show the new state
+          return;
+        }
+        showMessage("request-error", "error",
+          errorMessage(outcome.body, "Request refused"));
+      });
+
+    refresh();
+  }
+
   /* --- auth screens (T17) -------------------------------------------------------- */
 
   function initAuth(boot) {
@@ -421,6 +615,9 @@
     showMessage: showMessage,
     removeMessage: removeMessage,
     classifyOutcome: classifyOutcome,
+    renderWallet: renderWallet,
+    renderFeed: renderFeed,
+    initHome: initHome,
     initAuth: initAuth
   };
 });
