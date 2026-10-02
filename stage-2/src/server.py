@@ -44,6 +44,15 @@ class Ctx:
         self.params = {}
 
 
+class Raw:
+    """A non-JSON response body (e.g. the static CSS/JS of the UI, design.md section
+    14). Handlers return (status, Raw(content_type, bytes))."""
+
+    def __init__(self, content_type, body):
+        self.content_type = content_type
+        self.body = body
+
+
 class Route:
     def __init__(self, method, pattern, fn, public=False, idempotent=False):
         self.method = method
@@ -161,6 +170,23 @@ route("GET", r"/requests")(requests_endpoints.list_requests)
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
 
+# --- browser UI assets (design.md section 14: bundled, no CDN) ------------------
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+_STATIC_CACHE = {}
+
+
+@route("GET", r"/static/(?P<name>app\.css|app\.js)", public=True)
+def ep_static(ctx):
+    name = ctx.params["name"]
+    if name not in _STATIC_CACHE:
+        path = os.path.join(STATIC_DIR, name)
+        with open(path, "rb") as f:
+            _STATIC_CACHE[name] = f.read()
+    content_type = ("text/css; charset=utf-8" if name.endswith(".css")
+                    else "application/javascript; charset=utf-8")
+    return 200, Raw(content_type, _STATIC_CACHE[name])
+
 
 def run_idempotent(ctx, user, fn):
     """The shared idempotent-write pipeline (design.md section 5). Called while holding
@@ -245,6 +271,8 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = self._run(route, ctx)
             if payload is None:
                 self._send_empty(status)
+            elif isinstance(payload, Raw):
+                self._send_raw(status, payload)
             else:
                 self._send_json(status, payload)
         except errors.ApiError as exc:
@@ -273,6 +301,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_raw(self, status, raw):
+        self.send_response(status)
+        self.send_header("Content-Type", raw.content_type)
+        self.send_header("Content-Length", str(len(raw.body)))
+        self.end_headers()
+        self.wfile.write(raw.body)
 
     def _send_empty(self, status):
         self.send_response(status)
