@@ -148,9 +148,11 @@ def reset_seeded_statuses(ctx):
     expect(set(bob_rows) == {"a_o", "a_c"},
            f"bob sees a_o, a_c: {sorted(bob_rows)}")
     cyd_rows = {a["authorization_id"]: a for a in cyd.list_auths()}
-    expect(set(cyd_rows) == {"a_v"}, f"cyd sees a_v: {sorted(cyd_rows)}")
+    expect(set(cyd_rows) == {"a_c", "a_v"},
+           f"cyd (receiver of a_c, payer of a_v) sees those: {sorted(cyd_rows)}")
     dee_rows = {a["authorization_id"]: a for a in dee.list_auths()}
-    expect(set(dee_rows) == {"a_e"}, f"dee sees a_e: {sorted(dee_rows)}")
+    expect(set(dee_rows) == {"a_v", "a_e"},
+           f"dee (receiver of a_v, payer of a_e) sees those: {sorted(dee_rows)}")
     for aid, status in (("a_o", "open"), ("a_c", "captured"),
                         ("a_v", "voided"), ("a_e", "expired")):
         owner = {"a_o": by_id, "a_c": bob_rows, "a_v": cyd_rows,
@@ -264,9 +266,14 @@ def authz_create_errors(ctx):
        "note 200 chars ok")
 
     ada4, *_ = fresh(ctx)
-    for v in ("Public", "friends", "", 1, None):
+    for v in ("Public", "friends", "", 1):
         err_is(ada4.authorize("bob", 50, visibility=v, key=f"e5-{v!r}"), 422,
                "validation_failed", f"visibility {v!r}")
+    err_is(ada4.api.post("/authorizations",
+                         body={"to_handle": "bob", "amount": 50,
+                               "visibility": None},
+                         token=ada4.token, key="e5-null"), 422,
+           "validation_failed", "explicit null visibility")
     err_is(ada4.authorize("nobody", 50, key="e6"), 404, "not_found",
            "unknown handle")
     body = {"to_handle": "bob", "amount": 60, "bogus": 1}
