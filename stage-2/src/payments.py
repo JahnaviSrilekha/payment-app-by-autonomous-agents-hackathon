@@ -75,7 +75,10 @@ def create_payment(ctx, user, service):
     if to_handle not in service["handles"]:
         raise errors.not_found("no user has that handle")
     sender = service["users"][user["id"]]
-    if sender["balance"] < amount:
+    # R149: affordability is against available (total minus open holds), not balance.
+    # With no open holds this equals the stage-1 balance check byte for byte.
+    if state_mod.available(user["id"], service,
+                           state_mod.now_utc()) < amount:
         raise errors.insufficient_funds()
     to_user_id = service["handles"][to_handle]
     payment = append_payment(service, user["id"], to_user_id, amount, note, visibility)

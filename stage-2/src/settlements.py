@@ -84,13 +84,15 @@ def _validate_entries(service, transfers):
 
 
 def _check_affordability(service, legs):
-    """Collective, not pairwise (R97): every wallet's balance after all incoming and
-    outgoing transfers of the whole batch must stay nonnegative."""
+    """Collective, not pairwise (R97): every wallet's available (balance minus open
+    holds, R149) after all incoming and outgoing transfers of the whole batch must
+    stay nonnegative. Held funds cannot fund settlement net debits (R145)."""
     deltas = {}
     for leg in legs:
         deltas[leg["from_handle"]] = deltas.get(leg["from_handle"], 0) - leg["amount"]
         deltas[leg["to_handle"]] = deltas.get(leg["to_handle"], 0) + leg["amount"]
+    now = state_mod.now_utc()
     for handle, delta in deltas.items():
-        balance = service["users"][service["handles"][handle]]["balance"]
-        if balance + delta < 0:
+        user = service["users"][service["handles"][handle]]
+        if state_mod.available(user["id"], service, now) + delta < 0:
             raise errors.insufficient_funds()
