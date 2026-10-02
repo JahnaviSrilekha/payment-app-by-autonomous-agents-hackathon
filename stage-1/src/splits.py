@@ -36,12 +36,12 @@ def create_split(ctx, user, service):
         raise errors.validation_failed("participant_handles must not be empty")
     if len(set(participants)) != len(participants):
         raise errors.validation_failed("participant_handles must not contain duplicates")
+    note = state_mod.get_note(body)
     for handle in participants:
         # a non-string is not the handle of any user; the caller's own handle always exists
         if not isinstance(handle, str) or (handle != user["handle"]
                                            and handle not in service["handles"]):
             raise errors.not_found("no user has that handle")
-    note = state_mod.get_note(body)
 
     shares = split_shares(amount, len(participants))
     share_list = [{"handle": handle, "amount": share}

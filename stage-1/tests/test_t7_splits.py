@@ -191,6 +191,10 @@ class TestT7SplitsHttp(unittest.TestCase):
             ({"amount": 5, "participant_handles": ["bob", "bob"]}, 422, "validation_failed", "dup"),
             ({"amount": 5, "participant_handles": ["ghost"]}, 404, "not_found", "unknown"),
             ({"amount": 5, "participant_handles": "bob"}, 400, "malformed_request", "not array"),
+            # field validation (note length) precedes the resource check (unknown handle),
+            # matching POST /payments and POST /requests
+            ({"amount": 100, "participant_handles": ["nobody"], "note": "x" * 201}, 422,
+             "validation_failed", "unknown+note"),
             ({"amount": 5, "participant_handles": ["bob"], "note": "x" * 201}, 422,
              "validation_failed", "note"),
         ]
