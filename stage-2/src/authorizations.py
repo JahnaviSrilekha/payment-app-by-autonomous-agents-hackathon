@@ -34,22 +34,6 @@ def capture_exceeds_authorization():
                            "capture exceeds the remaining authorized amount")
 
 
-
-def authorization_not_open():
-    return errors.ApiError(409, "authorization_not_open",
-                           "authorization is not open")
-
-
-def authorization_expired():
-    return errors.ApiError(409, "authorization_expired",
-                           "authorization has expired")
-
-
-def capture_exceeds_authorization():
-    return errors.ApiError(422, "capture_exceeds_authorization",
-                           "capture exceeds the remaining authorized amount")
-
-
 def authorization_response(service, authz, now):
     """One authorization payload (R162's create shape) with the fields every
     authorization response carries (R172): remaining_amount and the ordered
@@ -181,11 +165,6 @@ def capture_authorization(ctx, user, service):
     return 201, payments.payment_response(service, payment)
 
 
-
-def _get(service, authz_id):
-    return service["authorizations"].get(authz_id)
-
-
 # --- POST /authorizations/{id}/void (no key, like decline/cancel) -----------------
 
 
@@ -210,3 +189,37 @@ def void_authorization(ctx, user, service):
     return 200, authorization_response(service, authz, now)
 
 
+# --- GET /authorizations ----------------------------------------------------------
+
+
+def list_authorizations(ctx, user, service):
+    """GET /authorizations — only authorizations involving the caller, newest first
+    (R180, R181). Filters: direction (caller as payer/receiver), status against the
+    effective status so a clock-expired row matches expired, never open (R182);
+    limit/offset/has_more exactly as GET /requests (R183)."""
+    limit = state_mod.parse_limit(ctx.query)
+    offset = state_mod.parse_offset(ctx.query)
+    direction = ctx.query.get("direction", [None])[0]
+    status = ctx.query.get("status", [None])[0]
+    if direction is not None and direction not in ("incoming", "outgoing"):
+        raise errors.validation_failed("direction must be incoming or outgoing")
+    if status is not None and status not in AUTHORIZATION_STATUSES:
+        raise errors.validation_failed("unknown status value")
+    now = state_mod.now_utc()
+    mine = []
+    for authz_id in reversed(service["authorization_order"]):
+        authz = service["authorizations"][authz_id]
+        if authz["from_user_id"] != user["id"] and authz["to_user_id"] != user["id"]:
+            continue  # exclusion, not refusal (R180)
+        if direction == "incoming" and authz["to_user_id"] != user["id"]:
+            continue
+        if direction == "outgoing" and authz["from_user_id"] != user["id"]:
+            continue
+        if status is not None and state_mod.effective_status(authz, now) != status:
+            continue
+        mine.append(authz)
+    page = mine[offset:offset + limit]
+    return 200, {
+        "authorizations": [authorization_response(service, a, now) for a in page],
+        "has_more": len(mine) > offset + limit,
+    }

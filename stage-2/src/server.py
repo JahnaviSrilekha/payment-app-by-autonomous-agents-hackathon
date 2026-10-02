@@ -172,6 +172,7 @@ route("POST", r"/authorizations", idempotent=True)(authorizations.create_authori
 route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
     authorizations.capture_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
+route("GET", r"/authorizations")(authorizations.list_authorizations)
 
 
 def run_idempotent(ctx, user, fn):
