@@ -1014,6 +1014,7 @@ def downgrade_to_v1(export):
     st["format_version"] = 1
     state = st.get("state", {})
     state.pop("authorizations", None)
+    state.pop("authorization_order", None)
     state.pop("authorization_ttl_seconds", None)
     for pay in state.get("payments", []) or []:
         pay.pop("authorization_id", None)
@@ -1080,9 +1081,9 @@ def import_preserves_session_and_retry(ctx):
     ctx.reset(fixture([fx_user("u_zed", "zed", 1)]))
     eq(ctx.api.post("/_test/import", body=export, timeout=15).status, 204,
        "import completes between browser requests")
-    r = ctx.api.get("/me", token=token_before)
-    eq(r.status, 200, f"the pre-import bearer token is still valid: {r}")
-    eq(r.json["handle"], "ada", "same user")
+    me_resp = ctx.api.get("/me", token=token_before)
+    eq(me_resp.status, 200, f"the pre-import bearer token is still valid: {me_resp}")
+    eq(me_resp.json["handle"], "ada", "same user")
     r2 = ada.api.post("/payments", body=body, token=ada.token, key="lost-1")
     eq(r2.status, 200, f"retry with the same key and body after import: {r2}")
     eq(r2.json["payment_id"], r.json["payment_id"], "original payment recovered")
