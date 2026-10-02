@@ -136,11 +136,8 @@ def std_fixture(operators=(), currency="EUR", minor_units=2, balances=None, paym
         fu("u_dave", "dave@example.com", "dave", b.get("dave", 0)),
         fu("u_frank", "frank@example.com", "frank", b.get("frank", 0)),
     ]
-    f = {"currency": currency, "minor_units": minor_units, "users": users}
-    if payments:
-        f["payments"] = list(payments)
-    if requests:
-        f["requests"] = list(requests)
+    f = {"currency": currency, "minor_units": minor_units, "users": users,
+         "payments": list(payments), "requests": list(requests)}
     if operators:
         f["settlement_operator_ids"] = list(operators)
     return f

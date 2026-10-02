@@ -55,7 +55,7 @@ def r11_reset_seeds_state(h, ck):
 @test("r11_reset_replaces_and_repeats", "R11", "R93", "R51")
 def r11_reset_replaces_and_repeats(h, ck):
     ck.eq(h.request("POST", "/_test/reset", body=std_fixture()).status, 204, "reset F1")
-    f2 = {"currency": "EUR", "minor_units": 2,
+    f2 = {"currency": "EUR", "minor_units": 2, "payments": [], "requests": [],
           "users": [fu("u_zoe", "zoe@example.com", "zoe", 77)]}
     ck.eq(h.request("POST", "/_test/reset", body=f2).status, 204, "reset F2")
     r_ada = h.request("POST", "/auth/login", body={"email": "ada@example.com", "password": "correct horse"})
@@ -390,10 +390,12 @@ def r49_password_min_length(h, ck):
 @test("r50_email_shape", "R50")
 def r50_email_shape(h, ck):
     ck.eq(h.request("POST", "/_test/reset", body=std_fixture()).status, 204, "reset")
-    for email in ["nodomain", "a@b@c", "@b.com", "a@", "a b@example.com"]:
+    for email in ["nodomain", "a@b@c", "@b.com", "a@"]:
         r = h.request("POST", "/auth/signup", body={"email": email, "password": "correct horse",
                                                     "display_name": "E"})
         ck.is_err(r, 422, "validation_failed", "bad email %r" % email)
+    # note: the spec defines no charset for local/domain; a space-containing local part
+    # ("a b@example.com") is not asserted (recorded in coverage.md as ambiguous).
     ok = h.request("POST", "/auth/signup", body={"email": "a@b", "password": "correct horse",
                                                  "display_name": "E"})
     ck.eq(ok.status, 201, "minimal valid email local@domain")

@@ -268,7 +268,7 @@ def r31_big_int(h, ck):
 @test("r35_negative_fixture_balance_422", "R35", "R11", needs=('me',))
 def r35_negative_fixture(h, ck):
     ck.eq(h.request("POST", "/_test/reset", body=std_fixture()).status, 204, "reset good fixture")
-    bad = {"currency": "EUR", "minor_units": 2,
+    bad = {"currency": "EUR", "minor_units": 2, "payments": [], "requests": [],
            "users": [fu("u_neg", "neg@example.com", "neg", -5)]}
     r = h.request("POST", "/_test/reset", body=bad)
     ck.is_err(r, 422, "validation_failed", "negative fixture balance rejected")
@@ -1129,7 +1129,8 @@ def r93_reset_clears(h, ck):
     u = Users(h, ck)
     e = h.request("GET", "/_test/export").json
     ck.eq(h.request("POST", "/_test/import", body=e).status, 204, "import")
-    f2 = {"currency": "EUR", "minor_units": 2, "users": [fu("u_zoe", "zoe@example.com", "zoe", 77)]}
+    f2 = {"currency": "EUR", "minor_units": 2, "payments": [], "requests": [],
+          "users": [fu("u_zoe", "zoe@example.com", "zoe", 77)]}
     ck.eq(h.request("POST", "/_test/reset", body=f2).status, 204, "reset over imported state")
     zoe = h.request("POST", "/auth/login", body={"email": "zoe@example.com", "password": "correct horse"})
     ck.eq(zoe.status, 200, "new fixture only")
