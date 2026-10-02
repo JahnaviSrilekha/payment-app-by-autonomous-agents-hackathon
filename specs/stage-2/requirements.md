@@ -258,7 +258,7 @@ changes.
   `to_handle` equal to caller's own handle → `422 self_payment`; `note` over 200 chars or
   `visibility` not `public`/`private` → `422 validation_failed`; unknown `to_handle` →
   `404 not_found`. (Row order in the spec table is the precedence order, consistent with
-  stage-1 §5's payment error precedence — recorded as A9 below since the spec states the
+  stage-1 §5's payment error precedence — recorded as A8 below since the spec states the
   table but not explicitly "in this order.")
 - **R164** (behaviour). "An open authorisation is not a feed item and never appears in
   `GET /activity`."
@@ -303,7 +303,7 @@ changes.
   `expires_at` at or before now → `409 authorization_expired`; `amount` above uncaptured
   remainder → `422 capture_exceeds_authorization`; `amount` below 1 or not an integer →
   `422 validation_failed`; caller is not the receiver → `403 forbidden`; unknown authorisation
-  → `404 not_found`. (Row order is the stated precedence order — A9.)
+  → `404 not_found`. (Row order is the stated precedence order — A8.)
 
 ## P. `POST /authorizations/{id}/void`
 
