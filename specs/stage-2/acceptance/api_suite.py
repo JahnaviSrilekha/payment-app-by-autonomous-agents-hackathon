@@ -740,8 +740,8 @@ def held_funds_unspendable_everywhere(ctx):
     eq(ada.me()["total"], 10000, "nothing moved")
     rq = bob.api.post("/requests", body={"payer_handle": "ada", "amount": 4001},
                       token=bob.token, key="h3").json
-    err_is(bob.api.post(f"/requests/{rq['request_id']}/pay", body={},
-                        token=bob.token, key="h4"), 409, "insufficient_funds",
+    err_is(ada.api.post(f"/requests/{rq['request_id']}/pay", body={},
+                        token=ada.token, key="h4"), 409, "insufficient_funds",
            "request-pay cannot spend held funds")
     err_is(ctx.api.post("/settlements", body={"transfers": [
         {"from_handle": "ada", "to_handle": "cyd", "amount": 4001}]},
@@ -1088,8 +1088,8 @@ def import_preserves_session_and_retry(ctx):
     eq(r2.status, 200, f"retry with the same key and body after import: {r2}")
     eq(r2.json["payment_id"], r.json["payment_id"], "original payment recovered")
     eq(ada.me()["total"], 9889, "10000-111: moved exactly once across the import")
-    rp = bob.api.post(f"/requests/{rq['request_id']}/pay", body={},
-                      token=bob.token, key="rq-post")
+    rp = ada.api.post(f"/requests/{rq['request_id']}/pay", body={},
+                      token=ada.token, key="rq-post")
     eq(rp.status, 201, f"an existing pending request stays payable: {rp}")
     eq(ada.me()["total"], 9667, "9889-222")
 
