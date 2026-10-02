@@ -27,7 +27,8 @@ class TestT3Reset(unittest.TestCase):
         ada_token = payload["token"]
         status, me, _ = self.client.request("GET", "/me", token=ada_token)
         self.assertEqual(me, {"user_id": "u_ada", "display_name": "Ada", "handle": "ada",
-                              "balance": 10000, "currency": "EUR", "minor_units": 2})
+                              "balance": 10000, "total": 10000, "available": 10000,
+                              "held": 0, "currency": "EUR", "minor_units": 2})
         _, bob_login, _ = self.client.request("POST", "/auth/login",
                                               {"email": "bob@example.com", "password": "correct horse"})
         _, me_bob, _ = self.client.request("GET", "/me", token=bob_login["token"])
@@ -119,7 +120,7 @@ class TestT3ExportImport(unittest.TestCase):
         status, payload, _ = self.client.request("GET", "/_test/export")
         self.assertEqual(status, 200)
         self.assertEqual(payload["track"], "pocketful")
-        self.assertEqual(payload["format_version"], 1)
+        self.assertEqual(payload["format_version"], 2)  # stage 2 exports version 2
         self.assertIsInstance(payload["state"], dict)
 
     def test_export_is_atomic_snapshot(self):
@@ -201,7 +202,7 @@ class TestT3ExportImport(unittest.TestCase):
 
         bad_payloads = [
             {"track": "other", "format_version": 1, "state": good["state"]},
-            {"track": "pocketful", "format_version": 2, "state": good["state"]},
+            {"track": "pocketful", "format_version": 3, "state": good["state"]},
             {"track": "pocketful", "format_version": 1},
             {"track": "pocketful", "format_version": 1, "state": {"currency": "EUR"}},
             {"track": "pocketful", "format_version": 1, "state": dict(good["state"], users={})},
