@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth
+import authorizations
 import errors
 import idempotency
 import payments
@@ -176,6 +177,11 @@ route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_reque
 route("GET", r"/requests")(requests_endpoints.list_requests)
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
+route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
+    authorizations.capture_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
+route("GET", r"/authorizations")(authorizations.list_authorizations)
 
 # --- browser UI assets (design.md section 14: bundled, no CDN) ------------------
 
