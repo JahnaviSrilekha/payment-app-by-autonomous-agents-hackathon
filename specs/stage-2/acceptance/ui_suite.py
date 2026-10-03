@@ -162,6 +162,14 @@ def assert_no_reload(page, what):
        f"{what}: page must not reload")
 
 
+def goto_marked(page, ctx, path):
+    """Navigate and (re)arm the no-reload marker afterwards: a goto creates a
+    fresh document, so the marker must be set after the last navigation and
+    only then asserted across the actions under test."""
+    page.goto(ctx.base + path)
+    page.evaluate("window.__no_reload_marker = 42")
+
+
 # ----------------------------------------------------------------- auth screens
 
 @test("ui_signup_login", "R104 R113 R114")
@@ -291,7 +299,7 @@ def ui_pay_resubmit_noop(ctx):
     need_pw()
     page = ctx.page()
     login_as(ctx, page, "ada", fixture(auth_ui_test_users(ctx)))
-    page.goto(ctx.base + "/")
+    goto_marked(page, ctx, "/")
     tid(page, "pay-handle").fill("bob")
     tid(page, "pay-amount").fill("10.00")
     tid(page, "pay-note").fill("first")
@@ -389,7 +397,7 @@ def ui_wallet_refresh_latest_wins(ctx):
     page = ctx.page()
     fx = fixture(auth_ui_test_users(ctx))
     login_as(ctx, page, "ada", fx)
-    page.goto(ctx.base + "/")
+    goto_marked(page, ctx, "/")
     tid(page, "pay-handle").fill("bob")
     tid(page, "pay-amount").fill("5.00")
     ada = ctx.person("ada", via_fixture=True)
@@ -445,7 +453,7 @@ def ui_requests_screen_flows(ctx):
     ada = ctx.person("ada", via_fixture=True)
     rq_out = ada.api.post("/requests", body={"payer_handle": "bob", "amount": 1200},
                           token=ada.token, key="ui-rq-2").json
-    page.goto(ctx.base + "/requests")
+    goto_marked(page, ctx, "/requests")
     expect(tid(page, "empty-requests").count() == 0 or
            not tid(page, "empty-requests").is_visible(), "lists nonempty")
     item = tid(page, f"request-item-{rq_in['request_id']}")
@@ -488,10 +496,12 @@ def ui_requests_screen_flows(ctx):
         "data-status"), "cancelled", "outgoing cancelled")
     expect(tid(page, f"request-cancel-{rq_out2['request_id']}").count() == 0,
            "cancel button gone")
-    # refused pay shows request-error and refreshes
+    # refused pay shows request-error and refreshes.
+    # reset replaced all tokens, so sign in again before driving the screen
     fx2 = fixture([fx_user("u_ada", "ada", 500), fx_user("u_bob", "bob", 5000),
                    fx_user("u_cyd", "cyd", 5000), fx_user("u_dee", "dee", 5000)])
     ctx.reset(fx2)
+    login_ui(page, ctx, "ada")
     bob2 = ctx.person("bob", via_fixture=True)
     rq_big = bob2.api.post("/requests",
                            body={"payer_handle": "ada", "amount": 3000},
@@ -503,6 +513,7 @@ def ui_requests_screen_flows(ctx):
         "data-status"), "pending", "refused pay changes nothing")
     # empty state
     ctx.reset(fixture([fx_user("u_frank", "frank", 100)]))
+    login_ui(page, ctx, "frank")
     page.goto(ctx.base + "/requests")
     expect(tid(page, "empty-requests").is_visible(), "empty-requests when no lists")
 
@@ -605,7 +616,7 @@ def ui_authorizations_screen(ctx):
         fx_auth("a_void", "u_cyd", "u_ada", 300, "voided", 7200),
     ])
     login_as(ctx, page, "ada", fx)
-    page.goto(ctx.base + "/authorizations")
+    goto_marked(page, ctx, "/authorizations")
     item_out = tid(page, "authorization-item-a_out")
     eq(item_out.get_attribute("data-status"), "open", "outgoing open")
     expect(tid(page, "authorization-void-a_out").is_visible(),
@@ -710,7 +721,7 @@ def ui_survives_export_import(ctx):
     page = ctx.page()
     fx = fixture(auth_ui_test_users(ctx))
     login_as(ctx, page, "ada", fx)
-    page.goto(ctx.base + "/")
+    goto_marked(page, ctx, "/")
     state = {"aborted": 0}
 
     def maybe_abort(route):
@@ -821,7 +832,12 @@ def ui_testid_presence(ctx):
     tid(page, "current-user").wait_for(state="visible", timeout=8000)
 
     def present(*names):
-        missing = [n for n in names if not tid(page, n).count()]
+        missing = []
+        for n in names:
+            try:
+                tid(page, n).first.wait_for(state="attached", timeout=8000)
+            except Exception:
+                missing.append(n)
         expect(not missing, f"missing data-testid {missing}")
 
     present("current-user", "current-handle", "logout-button",
@@ -837,9 +853,13 @@ def ui_testid_presence(ctx):
     page.goto(ctx.base + "/split")
     present("split-amount", "split-handles", "split-note", "split-submit")
     page.goto(ctx.base + "/authorizations")
-    present("wallet-balance", "wallet-available")
-    expect(tid(page, "authorization-list").count() or
-           tid(page, "empty-authorizations").count(), "list or empty state")
+    rendered = tid(page, "authorization-list").count() or \
+        tid(page, "empty-authorizations").count()
+    expect(rendered, "list or empty state")
+    if rendered:
+        # R191 sits in the /authorizations UI section: the wallet numbers must
+        # reflect holds on this screen too, not only on /
+        present("wallet-balance", "wallet-available")
     # the authorize form lives on /authorizations or on /
     found = tid(page, "authorize-handle").count() > 0
     if not found:
@@ -964,8 +984,10 @@ def ui_distinct_states_loading(ctx):
     expect(not tid(page, "pay-error").is_visible() and
            not tid(page, "pay-uncertain").is_visible(),
            "success clears error and uncertainty")
-    # refused state: another client spends the wallet first
+    # refused state: another client spends the wallet first.
+    # reset replaces all state incl. tokens, so the browser must sign in again
     ctx.reset(fixture(auth_ui_test_users(ctx)))
+    login_ui(page, ctx, "ada")
     drainer = ctx.person("ada", via_fixture=True)
     drainer.pay("bob", 9990, key="drain-ui2")
     page.goto(ctx.base + "/")
@@ -984,6 +1006,7 @@ def ui_distinct_states_loading(ctx):
             route.continue_()
 
     ctx.reset(fixture(auth_ui_test_users(ctx)))
+    login_ui(page, ctx, "ada")
     page.goto(ctx.base + "/")
     page.route("**/payments", abort_once)
     tid(page, "pay-handle").fill("bob")
