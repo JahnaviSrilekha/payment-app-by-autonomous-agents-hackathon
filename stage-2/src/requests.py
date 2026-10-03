@@ -79,7 +79,9 @@ def pay_request(ctx, user, service):
     if request["status"] != "pending":
         raise errors.request_not_pending()
     payer = service["users"][request["payer_id"]]
-    if payer["balance"] < request["amount"]:
+    # R149: paying a request is evaluated against available (holds are unspendable).
+    if state_mod.available(payer["id"], service,
+                           state_mod.now_utc()) < request["amount"]:
         raise errors.insufficient_funds()
     payment = payments.append_payment(
         service,

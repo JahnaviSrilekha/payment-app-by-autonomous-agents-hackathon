@@ -19,6 +19,8 @@ HANDLE_RE = re.compile(r"^[a-z0-9_]{1,20}$")
 MAX_AMOUNT = 1000000000
 NOTE_MAX = 200
 KEY_MAX = 255
+DEFAULT_AUTHORIZATION_TTL = 600
+AUTHORIZATION_STATUSES = ("open", "captured", "voided", "expired")
 
 _state = None
 
@@ -46,6 +48,9 @@ def new_service(currency, minor_units):
         "payments": [],
         "requests": {},
         "request_order": [],
+        "authorization_ttl_seconds": DEFAULT_AUTHORIZATION_TTL,
+        "authorizations": {},
+        "authorization_order": [],
         "idempotency": {},
         "next_seq": 1,
     }
@@ -59,6 +64,57 @@ def next_seq(service):
 
 def now_rfc3339():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def parse_rfc3339(value):
+    """Parse an RFC 3339 timestamp into an aware UTC datetime. Raises ValueError on
+    anything that is not a timestamp string carrying a UTC offset."""
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be a string")
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must carry a UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
+# --- authorizations: derived holds (design.md sections 10-11, ADR-004) --------
+
+
+def effective_status(authorization, now):
+    """Pure function of the stored authorization row and an injected `now` (never the
+    wall clock): an open authorization whose expires_at is at or before now is
+    "expired". Nothing is ever mutated — "expired" is a computed view (R159)."""
+    if authorization["status"] == "open" and parse_rfc3339(authorization["expires_at"]) <= now:
+        return "expired"
+    return authorization["status"]
+
+
+def remaining_amount(authorization, now):
+    """Amount still held: the uncaptured remainder of an effectively open
+    authorization, zero for anything closed (captured, voided or expired)."""
+    if effective_status(authorization, now) != "open":
+        return 0
+    return authorization["amount"] - authorization["captured_amount"]
+
+
+def held(user_id, service, now):
+    """Sum of the user's open holds at the injected `now`. Pure: same inputs give the
+    same result, and expiry is judged only against `now` (R159)."""
+    return sum(remaining_amount(a, now) for a in service["authorizations"].values()
+               if a["from_user_id"] == user_id)
+
+
+def available(user_id, service, now):
+    """`total - held` at the injected `now`. Reset and every write path guarantee this
+    never goes negative (R145, R156)."""
+    return service["users"][user_id]["balance"] - held(user_id, service, now)
 
 
 # --- field parsing helpers (spec sections 4, 5) -------------------------------

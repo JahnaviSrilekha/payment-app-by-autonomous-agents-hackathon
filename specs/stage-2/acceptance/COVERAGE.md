@@ -1,0 +1,177 @@
+# Acceptance tests
+
+- `reset_me_holds` — R147 R155 R159 R144 R145
+- `reset_no_holds_baseline` — R147 R148
+- `reset_v1_fixture_and_default_ttl` — R158 R154 R155
+- `reset_ttl_validation` — R154
+- `reset_hold_over_balance` — R156
+- `reset_seeded_statuses` — R157 R159 R153
+- `seeded_expired_lazy_read` — R159 R160 R182
+- `lazy_expiry_created_auth` — R143 R159 R154 R145
+- `authz_create_shape` — R161 R162 R172
+- `authz_create_errors` — R163 R18 R31
+- `authz_create_error_precedence` — R163
+- `authz_create_idempotency` — R152 R161 R59 R60 R61 R57 R44
+- `authz_not_in_activity` — R164 R167
+- `capture_default_final_full_and_partial` — R143 R165 R167 R168 R169 R172
+- `capture_extended_mode` — R143 R170 R172 R173
+- `capture_exceeds_vs_remaining` — R171 R165
+- `capture_errors` — R175 R18 R40
+- `capture_error_precedence` — R175
+- `capture_idempotency` — R166 R152 R59 R60 R61 R174
+- `capture_money_once_randomized` — R146 R192 R145
+- `void_payer_only_and_states` — R176 R177 R178 R179 R173 R172
+- `void_partially_captured_preserves_records` — R173 R172 R169
+- `authz_list_scope_direction_newest` — R180 R181
+- `authz_list_filters_status` — R182 R181 R159 R44 R42
+- `authz_list_pagination_like_requests` — R183 R44 R42
+- `held_funds_unspendable_everywhere` — R145 R149 R163
+- `stage1_paths_hold_free_and_marked` — R148 R167 R149
+- `splits_unchanged_under_holds` — R151 R80 R82 R83
+- `authorize_request_interaction_out_of_scope` — R150 R167
+- `storm_mixed_concurrent` — R144 R145 R146 R192 R45 R2 R1
+- `concurrent_authorizations_same_headroom` — R145 R192 R163
+- `concurrent_captures_and_void_race` — R146 R192 R145 R173
+- `replay_after_state_change` — R62 R59 R166
+- `import_v1_export_defaults` — R138 R158 R154 R155
+- `import_stage1_live_if_available` — R138 R158
+- `import_preserves_session_and_retry` — R139 R141 R140 R91
+- `import_replacement_and_validation` — R87 R92 R88 R93 R85
+- `content_negotiation_shared_routes` — R105 R184
+- `stage1_regression_smoke` — R147 R149 R152 R56 R59 R66 R73 R77 R82 R97
+- `ui_signup_login` — R104 R113 R114
+- `ui_wallet_with_and_without_holds` — R115 R120 R121 R147 R185 R186 R187 R191 R108
+- `ui_pay_decimal_rules` — R118 R119 R115
+- `ui_pay_resubmit_noop` — R116 R129
+- `ui_pay_uncertain_then_retry` — R135 R136 R116 R117
+- `ui_pay_refused_by_concurrent_spend` — R133
+- `ui_wallet_refresh_latest_wins` — R130 R131 R132
+- `ui_requests_screen_flows` — R104 R125 R126 R129 R133
+- `ui_stale_pay_button_disappears` — R134
+- `ui_split_preview_matches_submit` — R127 R128 R82 R83
+- `ui_authorizations_screen` — R184 R188 R189 R190 R129 R191
+- `ui_authorize_form_errors` — R108 R186 R188 R119 R163
+- `ui_survives_export_import` — R139 R140 R141 R142
+- `ui_activity_feed` — R122 R123 R124 R109
+- `ui_testid_presence` — R106
+- `ui_layout_375` — R111 R107 R110
+- `ui_layout_desktop` — R111 R107 R110
+- `ui_navigation_and_reachability` — R104 R111
+- `ui_distinct_states_loading` — R110 R136
+
+# Requirement coverage
+
+- **R1**: `storm_mixed_concurrent`
+- **R2**: `storm_mixed_concurrent`
+- **R18**: `authz_create_errors`, `capture_errors`
+- **R31**: `authz_create_errors`
+- **R40**: `capture_errors`
+- **R42**: `authz_list_filters_status`, `authz_list_pagination_like_requests`
+- **R44**: `authz_create_idempotency`, `authz_list_filters_status`, `authz_list_pagination_like_requests`
+- **R45**: `storm_mixed_concurrent`
+- **R56**: `stage1_regression_smoke`
+- **R57**: `authz_create_idempotency`
+- **R59**: `authz_create_idempotency`, `capture_idempotency`, `replay_after_state_change`, `stage1_regression_smoke`
+- **R60**: `authz_create_idempotency`, `capture_idempotency`
+- **R61**: `authz_create_idempotency`, `capture_idempotency`
+- **R62**: `replay_after_state_change`
+- **R66**: `stage1_regression_smoke`
+- **R73**: `stage1_regression_smoke`
+- **R77**: `stage1_regression_smoke`
+- **R80**: `splits_unchanged_under_holds`
+- **R82**: `splits_unchanged_under_holds`, `stage1_regression_smoke`, `ui_split_preview_matches_submit`
+- **R83**: `splits_unchanged_under_holds`, `ui_split_preview_matches_submit`
+- **R85**: `import_replacement_and_validation`
+- **R87**: `import_replacement_and_validation`
+- **R88**: `import_replacement_and_validation`
+- **R91**: `import_preserves_session_and_retry`
+- **R92**: `import_replacement_and_validation`
+- **R93**: `import_replacement_and_validation`
+- **R97**: `stage1_regression_smoke`
+- **R104**: `ui_signup_login`, `ui_requests_screen_flows`, `ui_navigation_and_reachability`
+- **R105**: `content_negotiation_shared_routes`
+- **R106**: `ui_testid_presence`
+- **R107**: `ui_layout_375`, `ui_layout_desktop`
+- **R108**: `ui_wallet_with_and_without_holds`, `ui_authorize_form_errors`
+- **R109**: `ui_activity_feed`
+- **R110**: `ui_layout_375`, `ui_layout_desktop`, `ui_distinct_states_loading`
+- **R111**: `ui_layout_375`, `ui_layout_desktop`, `ui_navigation_and_reachability`
+- **R113**: `ui_signup_login`
+- **R114**: `ui_signup_login`
+- **R115**: `ui_wallet_with_and_without_holds`, `ui_pay_decimal_rules`
+- **R116**: `ui_pay_resubmit_noop`, `ui_pay_uncertain_then_retry`
+- **R117**: `ui_pay_uncertain_then_retry`
+- **R118**: `ui_pay_decimal_rules`
+- **R119**: `ui_pay_decimal_rules`, `ui_authorize_form_errors`
+- **R120**: `ui_wallet_with_and_without_holds`
+- **R121**: `ui_wallet_with_and_without_holds`
+- **R122**: `ui_activity_feed`
+- **R123**: `ui_activity_feed`
+- **R124**: `ui_activity_feed`
+- **R125**: `ui_requests_screen_flows`
+- **R126**: `ui_requests_screen_flows`
+- **R127**: `ui_split_preview_matches_submit`
+- **R128**: `ui_split_preview_matches_submit`
+- **R129**: `ui_pay_resubmit_noop`, `ui_requests_screen_flows`, `ui_authorizations_screen`
+- **R130**: `ui_wallet_refresh_latest_wins`
+- **R131**: `ui_wallet_refresh_latest_wins`
+- **R132**: `ui_wallet_refresh_latest_wins`
+- **R133**: `ui_pay_refused_by_concurrent_spend`, `ui_requests_screen_flows`
+- **R134**: `ui_stale_pay_button_disappears`
+- **R135**: `ui_pay_uncertain_then_retry`
+- **R136**: `ui_pay_uncertain_then_retry`, `ui_distinct_states_loading`
+- **R138**: `import_v1_export_defaults`, `import_stage1_live_if_available`
+- **R139**: `import_preserves_session_and_retry`, `ui_survives_export_import`
+- **R140**: `import_preserves_session_and_retry`, `ui_survives_export_import`
+- **R141**: `import_preserves_session_and_retry`, `ui_survives_export_import`
+- **R142**: `ui_survives_export_import`
+- **R143**: `lazy_expiry_created_auth`, `capture_default_final_full_and_partial`, `capture_extended_mode`
+- **R144**: `reset_me_holds`, `storm_mixed_concurrent`
+- **R145**: `reset_me_holds`, `lazy_expiry_created_auth`, `capture_money_once_randomized`, `held_funds_unspendable_everywhere`, `storm_mixed_concurrent`, `concurrent_authorizations_same_headroom`, `concurrent_captures_and_void_race`
+- **R146**: `capture_money_once_randomized`, `storm_mixed_concurrent`, `concurrent_captures_and_void_race`
+- **R147**: `reset_me_holds`, `reset_no_holds_baseline`, `stage1_regression_smoke`, `ui_wallet_with_and_without_holds`
+- **R148**: `reset_no_holds_baseline`, `stage1_paths_hold_free_and_marked`
+- **R149**: `held_funds_unspendable_everywhere`, `stage1_paths_hold_free_and_marked`, `stage1_regression_smoke`
+- **R150**: `authorize_request_interaction_out_of_scope`
+- **R151**: `splits_unchanged_under_holds`
+- **R152**: `authz_create_idempotency`, `capture_idempotency`, `stage1_regression_smoke`
+- **R153**: `reset_seeded_statuses`
+- **R154**: `reset_v1_fixture_and_default_ttl`, `reset_ttl_validation`, `lazy_expiry_created_auth`, `import_v1_export_defaults`
+- **R155**: `reset_me_holds`, `reset_v1_fixture_and_default_ttl`, `import_v1_export_defaults`
+- **R156**: `reset_hold_over_balance`
+- **R157**: `reset_seeded_statuses`
+- **R158**: `reset_v1_fixture_and_default_ttl`, `import_v1_export_defaults`, `import_stage1_live_if_available`
+- **R159**: `reset_me_holds`, `reset_seeded_statuses`, `seeded_expired_lazy_read`, `lazy_expiry_created_auth`, `authz_list_filters_status`
+- **R160**: `seeded_expired_lazy_read`
+- **R161**: `authz_create_shape`, `authz_create_idempotency`
+- **R162**: `authz_create_shape`
+- **R163**: `authz_create_errors`, `authz_create_error_precedence`, `held_funds_unspendable_everywhere`, `concurrent_authorizations_same_headroom`, `ui_authorize_form_errors`
+- **R164**: `authz_not_in_activity`
+- **R165**: `capture_default_final_full_and_partial`, `capture_exceeds_vs_remaining`
+- **R166**: `capture_idempotency`, `replay_after_state_change`
+- **R167**: `authz_not_in_activity`, `capture_default_final_full_and_partial`, `stage1_paths_hold_free_and_marked`, `authorize_request_interaction_out_of_scope`
+- **R168**: `capture_default_final_full_and_partial`
+- **R169**: `capture_default_final_full_and_partial`, `void_partially_captured_preserves_records`
+- **R170**: `capture_extended_mode`
+- **R171**: `capture_exceeds_vs_remaining`
+- **R172**: `authz_create_shape`, `capture_default_final_full_and_partial`, `capture_extended_mode`, `void_payer_only_and_states`, `void_partially_captured_preserves_records`
+- **R173**: `capture_extended_mode`, `void_payer_only_and_states`, `void_partially_captured_preserves_records`, `concurrent_captures_and_void_race`
+- **R174**: `capture_idempotency`
+- **R175**: `capture_errors`, `capture_error_precedence`
+- **R176**: `void_payer_only_and_states`
+- **R177**: `void_payer_only_and_states`
+- **R178**: `void_payer_only_and_states`
+- **R179**: `void_payer_only_and_states`
+- **R180**: `authz_list_scope_direction_newest`
+- **R181**: `authz_list_scope_direction_newest`, `authz_list_filters_status`
+- **R182**: `seeded_expired_lazy_read`, `authz_list_filters_status`
+- **R183**: `authz_list_pagination_like_requests`
+- **R184**: `content_negotiation_shared_routes`, `ui_authorizations_screen`
+- **R185**: `ui_wallet_with_and_without_holds`
+- **R186**: `ui_wallet_with_and_without_holds`, `ui_authorize_form_errors`
+- **R187**: `ui_wallet_with_and_without_holds`
+- **R188**: `ui_authorizations_screen`, `ui_authorize_form_errors`
+- **R189**: `ui_authorizations_screen`
+- **R190**: `ui_authorizations_screen`
+- **R191**: `ui_wallet_with_and_without_holds`, `ui_authorizations_screen`
+- **R192**: `capture_money_once_randomized`, `storm_mixed_concurrent`, `concurrent_authorizations_same_headroom`, `concurrent_captures_and_void_race`

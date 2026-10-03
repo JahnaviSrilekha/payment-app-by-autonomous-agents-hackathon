@@ -11,9 +11,11 @@ import state as state_mod
 from auth import hash_password
 
 TRACK = "pocketful"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+IMPORT_VERSIONS = (1, 2)
 VALID_MINOR_UNITS = (0, 2, 3)
 REQUEST_STATUSES = ("pending", "paid", "declined", "cancelled")
+AUTHORIZATION_STATUSES = state_mod.AUTHORIZATION_STATUSES
 
 
 def build_from_fixture(fixture):
@@ -34,11 +36,21 @@ def build_from_fixture(fixture):
     if minor_units not in VALID_MINOR_UNITS:
         raise errors.validation_failed("minor_units must be 0, 2 or 3")
 
+    ttl = state_mod.DEFAULT_AUTHORIZATION_TTL
+    if "authorization_ttl_seconds" in fixture:
+        ttl = state_mod.parse_amount(fixture["authorization_ttl_seconds"],
+                                     "authorization_ttl_seconds")
+        if ttl < 1:
+            raise errors.validation_failed(
+                "authorization_ttl_seconds must be a positive integer")
+
     users = _require_list(fixture, "users")
     payments = _require_list(fixture, "payments")
     request_list = _require_list(fixture, "requests")
+    authorization_list = _optional_list(fixture, "authorizations")
 
     service = state_mod.new_service(currency, minor_units)
+    service["authorization_ttl_seconds"] = ttl
 
     for user in users:
         if not isinstance(user, dict):
@@ -110,6 +122,7 @@ def build_from_fixture(fixture):
             "visibility": visibility,
             "request_id": payment.get("request_id"),
             "settlement_id": None,
+            "authorization_id": None,  # seeded payments are stage-1-shaped (R167)
             "created_at": state_mod.now_rfc3339(),
             "seq": state_mod.next_seq(service),
         })
@@ -149,6 +162,80 @@ def build_from_fixture(fixture):
         }
         service["request_order"].append(request_id)
 
+    reset_time = state_mod.now_rfc3339()
+    for authorization in authorization_list:
+        if not isinstance(authorization, dict):
+            raise errors.malformed_request("each authorization must be an object")
+        authorization_id = _require_string(authorization, "id", "authorization")
+        from_user_id = _require_string(authorization, "from_user_id", "authorization")
+        to_user_id = _require_string(authorization, "to_user_id", "authorization")
+        if from_user_id not in service["users"]:
+            raise errors.validation_failed("unknown from_user_id %s" % from_user_id)
+        if to_user_id not in service["users"]:
+            raise errors.validation_failed("unknown to_user_id %s" % to_user_id)
+        if "amount" not in authorization:
+            raise errors.validation_failed("authorization amount is required")
+        amount = state_mod.parse_amount(authorization["amount"], "amount")
+        state_mod.check_amount_range(amount)
+        note = _seeded_note(authorization)
+        visibility = authorization.get("visibility", "public")
+        if visibility not in ("public", "private"):
+            raise errors.validation_failed("visibility must be public or private")
+        if "status" not in authorization:
+            raise errors.validation_failed("authorization status is required")
+        status = authorization["status"]
+        if status not in AUTHORIZATION_STATUSES:
+            raise errors.validation_failed(
+                "status must be one of %s" % (AUTHORIZATION_STATUSES,))
+        if "expires_at" not in authorization:
+            raise errors.validation_failed("authorization expires_at is required")
+        try:
+            state_mod.parse_rfc3339(authorization["expires_at"])
+        except ValueError:
+            raise errors.validation_failed("expires_at must be an RFC 3339 timestamp")
+        captured_amount = state_mod.parse_amount(authorization.get("captured_amount", 0),
+                                                 "captured_amount")
+        if captured_amount < 0 or captured_amount > amount:
+            raise errors.validation_failed(
+                "captured_amount must be between 0 and the authorized amount")
+        created_at = authorization.get("created_at", reset_time)
+        try:
+            state_mod.parse_rfc3339(created_at)
+        except ValueError:
+            raise errors.validation_failed("created_at must be an RFC 3339 timestamp")
+        payment_ids = authorization.get("payment_ids", [])
+        if not isinstance(payment_ids, list) \
+                or any(not isinstance(pid, str) for pid in payment_ids):
+            raise errors.validation_failed("payment_ids must be an array of payment ids")
+        if authorization_id in service["authorizations"]:
+            raise errors.validation_failed("duplicate authorization id %s" % authorization_id)
+        service["authorizations"][authorization_id] = {
+            "id": authorization_id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "amount": amount,
+            "captured_amount": captured_amount,
+            "currency": currency,
+            "note": note,
+            "visibility": visibility,
+            "status": status,
+            "expires_at": authorization["expires_at"],
+            "created_at": created_at,
+            "payment_ids": list(payment_ids),
+            "seq": state_mod.next_seq(service),
+        }
+        service["authorization_order"].append(authorization_id)
+
+    # R156: a sum of seeded unexpired open holds larger than a user's balance is a
+    # reset error, changing nothing — same pass as the negative-seeded-balance check.
+    now = state_mod.now_utc()
+    for user_id, user in service["users"].items():
+        holds = state_mod.held(user_id, service, now)
+        if holds > user["balance"]:
+            raise errors.validation_failed(
+                "seeded open holds (%d) exceed balance (%d) for user %s"
+                % (holds, user["balance"], user["handle"]))
+
     return service
 
 
@@ -170,6 +257,28 @@ def _require_list(container, field):
     if not isinstance(container[field], list):
         raise errors.malformed_request("%s must be an array" % field)
     return container[field]
+
+
+def _optional_list(container, field):
+    """A fixture array that may be omitted altogether: omission means an empty list
+    (R158). Present but not an array is 400, like the required arrays."""
+    if field not in container:
+        return []
+    if not isinstance(container[field], list):
+        raise errors.malformed_request("%s must be an array" % field)
+    return container[field]
+
+
+def _seeded_note(authorization):
+    if "note" not in authorization:
+        return ""
+    note = authorization["note"]
+    if not isinstance(note, str):
+        raise errors.validation_failed("note must be a string")
+    if len(note) > state_mod.NOTE_MAX:
+        raise errors.validation_failed(
+            "note must be at most %d characters" % state_mod.NOTE_MAX)
+    return note
 
 
 def _require_string(container, field, what):
@@ -198,14 +307,18 @@ def export_snapshot():
 
 def validate_import(payload):
     """Validate an imported export object and rebuild the service state from it without
-    touching shared state. Raises ApiError(422) on any invalid input."""
+    touching shared state. Raises ApiError(422) on any invalid input. Accepts
+    format_version 1 (a stage-1 export: no authorizations, ttl defaults, payment
+    authorization_id defaults null) or 2; any other version is 422."""
     if not isinstance(payload, dict):
         raise errors.malformed_request("body must be a JSON object")
     if "track" not in payload or payload["track"] != TRACK:
         raise errors.validation_failed("track must be %s" % TRACK)
     version = payload.get("format_version")
-    if isinstance(version, bool) or not isinstance(version, int) or version != FORMAT_VERSION:
-        raise errors.validation_failed("format_version must be %d" % FORMAT_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int) \
+            or version not in IMPORT_VERSIONS:
+        raise errors.validation_failed(
+            "format_version must be one of %s" % (IMPORT_VERSIONS,))
     if "state" not in payload or not isinstance(payload["state"], dict):
         raise errors.validation_failed("state is required")
 
@@ -238,6 +351,11 @@ def _build_from_state(raw):
     service["next_seq"] = raw["next_seq"]
     service["settlement_operator_ids"] = list(raw["settlement_operator_ids"])
 
+    ttl = raw.get("authorization_ttl_seconds", state_mod.DEFAULT_AUTHORIZATION_TTL)
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1:
+        raise ValueError("authorization_ttl_seconds")
+    service["authorization_ttl_seconds"] = ttl
+
     for user_id, user in raw["users"].items():
         _require_fields(user, ("id", "email", "password_hash", "display_name", "handle", "balance"))
         if not isinstance(user["id"], str) or not isinstance(user["email"], str) \
@@ -263,13 +381,63 @@ def _build_from_state(raw):
             raise ValueError("tokens")
         service["tokens"][token] = user_id
 
+    # Authorizations (stage-2 exports). A stage-1 (format_version 1) state has no
+    # authorizations key: omission means an empty list/dict (R158).
+    raw_authorizations = raw.get("authorizations", {})
+    if not isinstance(raw_authorizations, dict):
+        raise ValueError("authorizations")
+    for authorization_id, authorization in raw_authorizations.items():
+        _require_fields(authorization, ("id", "from_user_id", "to_user_id", "amount",
+                                        "captured_amount", "currency", "note",
+                                        "visibility", "status", "expires_at",
+                                        "created_at", "seq", "payment_ids"))
+        if authorization["from_user_id"] not in service["users"] \
+                or authorization["to_user_id"] not in service["users"]:
+            raise ValueError("authorization users")
+        amount = authorization["amount"]
+        if isinstance(amount, bool) or not isinstance(amount, int) \
+                or amount < 1 or amount > state_mod.MAX_AMOUNT:
+            raise ValueError("authorization amount")
+        captured_amount = authorization["captured_amount"]
+        if isinstance(captured_amount, bool) or not isinstance(captured_amount, int) \
+                or captured_amount < 0 or captured_amount > amount:
+            raise ValueError("authorization captured_amount")
+        if authorization["status"] not in AUTHORIZATION_STATUSES:
+            raise ValueError("authorization status")
+        try:
+            state_mod.parse_rfc3339(authorization["expires_at"])
+            state_mod.parse_rfc3339(authorization["created_at"])
+        except ValueError:
+            raise ValueError("authorization timestamps")
+        payment_ids = authorization["payment_ids"]
+        if not isinstance(payment_ids, list) \
+                or any(not isinstance(pid, str) for pid in payment_ids):
+            raise ValueError("authorization payment_ids")
+        if isinstance(authorization["seq"], bool) or not isinstance(authorization["seq"], int):
+            raise ValueError("authorization seq")
+        service["authorizations"][authorization_id] = copy.deepcopy(authorization)
+    raw_authorization_order = raw.get("authorization_order", [])
+    if not isinstance(raw_authorization_order, list):
+        raise ValueError("authorization_order")
+    for authorization_id in raw_authorization_order:
+        if authorization_id not in service["authorizations"]:
+            raise ValueError("authorization_order")
+        service["authorization_order"].append(authorization_id)
+
     for payment in raw["payments"]:
         _require_fields(payment, ("id", "from_user_id", "to_user_id", "amount", "currency",
                                   "note", "visibility", "request_id", "settlement_id",
                                   "created_at", "seq"))
         if payment["from_user_id"] not in service["users"] or payment["to_user_id"] not in service["users"]:
             raise ValueError("payment users")
-        service["payments"].append(copy.deepcopy(payment))
+        authorization_id = payment.get("authorization_id")
+        if authorization_id is not None \
+                and (not isinstance(authorization_id, str)
+                     or authorization_id not in service["authorizations"]):
+            raise ValueError("payment authorization_id")
+        stored_payment = copy.deepcopy(payment)
+        stored_payment.setdefault("authorization_id", None)  # stage-1 payments: null
+        service["payments"].append(stored_payment)
     for request_id, request in raw["requests"].items():
         _require_fields(request, ("id", "requester_id", "payer_id", "amount", "currency",
                                   "note", "status", "payment_id", "created_at", "seq"))
@@ -282,6 +450,13 @@ def _build_from_state(raw):
         service["request_order"].append(request_id)
 
     service["idempotency"] = idempotency.import_records(raw["idempotency"])
+
+    # The same invariant reset enforces (R156/R145): no imported state may leave a
+    # user's available balance negative.
+    now = state_mod.now_utc()
+    for user_id, user in service["users"].items():
+        if state_mod.held(user_id, service, now) > user["balance"]:
+            raise ValueError("available would be negative")
     return service
 
 

@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth
+import authorizations
 import errors
 import idempotency
 import payments
@@ -42,6 +43,15 @@ class Ctx:
         self.headers = headers
         self.query = query
         self.params = {}
+
+
+class Raw:
+    """A non-JSON response body (e.g. the static CSS/JS of the UI, design.md section
+    14). Handlers return (status, Raw(content_type, bytes))."""
+
+    def __init__(self, content_type, body):
+        self.content_type = content_type
+        self.body = body
 
 
 class Route:
@@ -146,7 +156,14 @@ def ep_import(ctx):
 
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
-    return 200, auth.me_response(user)
+    payload = auth.me_response(user)
+    # balance == total always; available/held are derived at read time from the open
+    # holds (design.md section 11). Runs while holding STATE_LOCK, like every read.
+    now = state_mod.now_utc()
+    payload["total"] = user["balance"]
+    payload["held"] = state_mod.held(user["id"], service, now)
+    payload["available"] = state_mod.available(user["id"], service, now)
+    return 200, payload
 
 
 # --- payments, activity, requests (batches 2+) ---------------------------------
@@ -160,6 +177,28 @@ route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_reque
 route("GET", r"/requests")(requests_endpoints.list_requests)
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
+route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
+    authorizations.capture_authorization)
+route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
+route("GET", r"/authorizations")(authorizations.list_authorizations)
+
+# --- browser UI assets (design.md section 14: bundled, no CDN) ------------------
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+_STATIC_CACHE = {}
+
+
+@route("GET", r"/static/(?P<name>app\.css|app\.js)", public=True)
+def ep_static(ctx):
+    name = ctx.params["name"]
+    if name not in _STATIC_CACHE:
+        path = os.path.join(STATIC_DIR, name)
+        with open(path, "rb") as f:
+            _STATIC_CACHE[name] = f.read()
+    content_type = ("text/css; charset=utf-8" if name.endswith(".css")
+                    else "application/javascript; charset=utf-8")
+    return 200, Raw(content_type, _STATIC_CACHE[name])
 
 
 def run_idempotent(ctx, user, fn):
@@ -245,6 +284,8 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = self._run(route, ctx)
             if payload is None:
                 self._send_empty(status)
+            elif isinstance(payload, Raw):
+                self._send_raw(status, payload)
             else:
                 self._send_json(status, payload)
         except errors.ApiError as exc:
@@ -273,6 +314,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_raw(self, status, raw):
+        self.send_response(status)
+        self.send_header("Content-Type", raw.content_type)
+        self.send_header("Content-Length", str(len(raw.body)))
+        self.end_headers()
+        self.wfile.write(raw.body)
 
     def _send_empty(self, status):
         self.send_response(status)
