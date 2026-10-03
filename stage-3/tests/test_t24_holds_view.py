@@ -197,6 +197,28 @@ class TestWrapperEqualsStage2(unittest.TestCase):
         self.assertEqual(authorizations.remaining_amount_view(a, NOW, NOW), 6000)
         self.assertEqual(state_mod.remaining_amount(a, NOW), 6000)
 
+    def test_known_at_before_a_real_capture_does_not_reduce_the_hold(self):
+        """R279: an event-backed capture is known at its server-assigned event time —
+        a known_at before it must leave the hold at its full amount, whatever as_of
+        says (regression: the unrecorded-remainder term must be computed against ALL
+        recorded captures, so an unknown_at capture cannot leak back in as if it had
+        no record)."""
+        a = auth(amount=500, captured_amount=200,
+                 captures=[{"payment_id": "p_c", "amount": 200, "final": False,
+                            "event_time": CAP1_S}])
+        before = datetime(2026, 1, 1, 10, 15, tzinfo=timezone.utc)
+        later_but_in_ttl = CAP2  # 11:30, after the capture, before the deadline
+        # known_at before the capture: full amount at every as_of
+        self.assertEqual(authorizations.remaining_amount_view(a, before, CR), 500)
+        self.assertEqual(authorizations.remaining_amount_view(a, later_but_in_ttl, CR),
+                         500)
+        self.assertEqual(authorizations.held_view("u_ada", service_with(a),
+                                                 later_but_in_ttl, CR), 500)
+        # known_at at/after the capture: the capture reduces the hold at capture time
+        self.assertEqual(authorizations.remaining_amount_view(a, before, NOW), 500)
+        self.assertEqual(authorizations.remaining_amount_view(a, later_but_in_ttl, NOW),
+                         300)
+
 
 class TestSeededHolds(unittest.TestCase):
     def setUp(self):
@@ -319,6 +341,42 @@ class TestSeededHolds(unittest.TestCase):
         state = self.client.request("GET", "/_test/export")[1]["state"]
         self.assertEqual(state["authorizations"][authz["authorization_id"]]["void"],
                          {"event_time": voided["closed_at"]})
+
+    def test_live_capture_known_at_gating_end_to_end(self):
+        """R279 end-to-end (reviewer reproduction): authorize, capture in a LATER
+        second, then walk the four (as_of, known_at) combinations — the capture must
+        only reduce the hold once known_at has reached its event time, regardless of
+        as_of."""
+        import time as time_mod
+        util.reset(self.client, self.fixture())
+        bob = self.login("bob@example.com")
+        _, authz, _ = self.client.request(
+            "POST", "/authorizations", {"to_handle": "ada", "amount": 500},
+            token=bob, key="auth-c279")
+        c_auth = authz["created_at"]
+        time_mod.sleep(1.1)
+        # the hold is bob's (payer bob, receiver ada): only ada may capture
+        _, capture, _ = self.client.request(
+            "POST", "/authorizations/%s/capture" % authz["authorization_id"],
+            {"amount": 200, "final": False}, token=self.login("ada@example.com"),
+            key="cap-c279")
+        self.assertIn("payment_id", capture)
+        c_capture = capture["created_at"]
+        self.assertNotEqual(state_mod.parse_rfc3339(c_auth),
+                            state_mod.parse_rfc3339(c_capture))
+        def held(as_of, known_at):
+            _, me, _ = self.client.request(
+                "GET", "/me?as_of=%s&known_at=%s"
+                % (as_of.replace("+", "%2B"), known_at.replace("+", "%2B")),
+                token=bob)
+            return me["held"]
+        # both reviewer-flagged cases: the capture is not yet known -> full hold
+        self.assertEqual(held(c_auth, c_auth), 500)
+        self.assertEqual(held(c_capture, c_auth), 500)
+        # once known, the capture reduces the hold at ITS event time (R277):
+        # as_of before the capture still shows the full hold; at/after, the remainder
+        self.assertEqual(held(c_auth, c_capture), 500)
+        self.assertEqual(held(c_capture, c_capture), 300)
 
     def test_held_view_pure_no_wall_clock(self):
         """Purity: held_view/effective_status_view read no wall clock."""

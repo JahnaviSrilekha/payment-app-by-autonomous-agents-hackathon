@@ -138,7 +138,14 @@ def remaining_amount_view(auth, as_of, known_at):
         return 0
     known = _known_captures(auth, known_at)
     captured_by_as_of = sum(c["amount"] for c in known if _parse(c["event_time"]) <= as_of)
-    unrecorded = auth.get("captured_amount", 0) - sum(c["amount"] for c in known)
+    # Only captures with NO event record at all are genuinely unrecorded (R287's
+    # seeded pre-reset captures); every event-backed capture is gated by its
+    # event_time twice — known_at (R279: known at its server-assigned event time)
+    # and as_of (R277: it reduces the hold at capture time) — so the unrecorded
+    # remainder is computed against ALL recorded captures, not just the known ones
+    # (a capture known_at excludes must not leak back in through this term).
+    unrecorded = auth.get("captured_amount", 0) - sum(c["amount"]
+                                                       for c in (auth.get("captures") or []))
     if unrecorded > 0:
         captured_by_as_of += unrecorded
     return auth["amount"] - captured_by_as_of
