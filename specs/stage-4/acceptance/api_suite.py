@@ -1460,7 +1460,8 @@ def refund_insufficient_funds_available(ctx):
     eq(bob.me()["total"], 3350, "150 moved")
     eq(bob.me()["available"], 50, "available tracked the refund")
     # boundary: refund exactly the available amount once the hold is released
-    eq(bob.void("h1").status in (200, 201), True, "hold released")
+    eq(bob.void(auth.json["authorization_id"]).status in (200, 201), True,
+       "hold released")
     eq(bob.me()["available"], 3350, "hold released")
     eq(bob.refund("p1", {"amount": 1600}, key="r2").status, 201,
        "refund up to the cumulative cap (400+1600=2000)")
@@ -1524,10 +1525,11 @@ def refund_of_settlement_member(ctx):
        "refund payment is not a settlement member (R332)")
     eq(stored_payment(ctx, sp).get("settlement_id"), sid,
        "original member keeps its settlement_id (R332)")
-    err_is_(ada.correct(r.json["payment_id"],
+    err_is_(cyd.correct(r.json["payment_id"],
                         {"expected_revision": 1, "amount": 100,
                          "effective_at": S(60), "reason": "no"}, key="c1"),
-            422, "linked_payment_immutable", "the refund payment is immutable (R307)")
+            422, "linked_payment_immutable",
+            "the refund payment is immutable (R307; cyd is its sender)")
     eq(cyd.refund(sp, {"amount": 150}, key="r2").status, 201, "second partial ok")
     err_is_(cyd.refund(sp, {"amount": 101}, key="r3"), 422,
             "refund_exceeds_payment", "ordinary refund_exceeds_payment applies (R332)")
@@ -1541,9 +1543,10 @@ def correction_refund_linked_immutable(ctx):
     r1 = bob.refund("p1", {"amount": 500}, key="r1")
     eq(r1.status, 201, "refund exists")
     rpid = r1.json["payment_id"]
-    err_is_(ada.correct(rpid, {"expected_revision": 1, "amount": 100,
+    err_is_(bob.correct(rpid, {"expected_revision": 1, "amount": 100,
                                "effective_at": S(4000), "reason": "no"}, key="c1"),
-            422, "linked_payment_immutable", "refund payments cannot be corrected")
+            422, "linked_payment_immutable",
+            "refund payments cannot be corrected (bob is the refund's sender)")
     eq(len(ada.revisions(rpid).json["revisions"]), 1, "no revision appended")
     auth = ada.authorize("bob", 400, key="au1")
     cap = bob.capture(auth.json["authorization_id"],
