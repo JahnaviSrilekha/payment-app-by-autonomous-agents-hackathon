@@ -18,6 +18,12 @@ import time
 S = lambda n: core.past(n)  # an instant n seconds before the suite loaded
 
 
+def future(seconds=3600):
+    """A fresh future instant computed at call time (SA-10): module-load-based
+    'future' values go stale on long suite runs."""
+    return iso(datetime.now(timezone.utc) + timedelta(seconds=seconds))
+
+
 def err_is_(r, status, code, what):
     eq(r.status, status, f"{what}: status")
     eq(r.err_code(), code, f"{what}: error code (body {r.raw[:200]!r})")
@@ -98,7 +104,7 @@ def seeded_future_created_at_rejected_atomically(ctx):
     totals_before = (ada.me()["total"], bob.me()["total"])
     bad = fixture([fx_user("u_ada", "ada", 8600), fx_user("u_bob", "bob", 6400)],
                   payments=[fx_pay("p1", "u_ada", "u_bob", 500,
-                                   created_at=S(-3600))])
+                                   created_at=future(3600))])
     err_is_(ctx.api.post("/_test/reset", body=bad), 422, "validation_failed",
             "future seeded created_at")
     eq(ada.me()["total"], totals_before[0], "no state change (ada)")
@@ -132,7 +138,7 @@ def me_as_of_semantics(ctx):
         (S(4500), 8500, "between p1 and p2"),
         (S(4000), 8800, "p2 at exactly as_of counts too"),
         (S(60), 8600, "after latest -> current balance"),
-        (S(-3600), 8600, "future as_of -> current balance (R251)"),
+        (future(3600), 8600, "future as_of -> current balance (R251)"),
     ]
     for inst, want, what in probes:
         m = ada.me(f"as_of={inst}")
@@ -320,7 +326,7 @@ def corrections_body_validation(ctx):
         cases.append((f"amount={v!r}", dict(base, amount=v)))
     for v in ("", "x" * 201):
         cases.append((f"reason={v!r}", dict(base, reason=v)))
-    for v in (S(-3600), "2026-09-24", "", "2026-09-24T13:20:00"):
+    for v in (future(3600), "2026-09-24", "", "2026-09-24T13:20:00"):
         cases.append((f"effective_at={v!r}", dict(base, effective_at=v)))
     for i, (what, body) in enumerate(cases):
         err_is_(ada.correct("p1", body, key=f"bad-{i}"), 422, "validation_failed",
@@ -599,10 +605,10 @@ def known_at_selection_semantics(ctx):
     eq(r.status, 201, "correction recorded now")
     eq(ada.me(f"known_at={S(4500)}")["balance"], 8500,
        "known_at before the correction's recording still selects rev1")
-    eq(ada.me(f"known_at={S(-60)}")["balance"], 8900,
+    eq(ada.me(f"known_at={future(60)}")["balance"], 8900,
        "known_at after recording selects rev2 (10000-1200+300-200; decrease "
        "of a sent payment credits the sender)")
-    eq(ada.me(f"known_at={S(-3600)}")["balance"], 8900,
+    eq(ada.me(f"known_at={future(3600)}")["balance"], 8900,
        "future known_at allowed (R251), sees rev2")
     st = ada.statement(f"known_at={S(4500)}")
     eq([(e["payment"]["payment_id"], e["payment"]["amount"], e["revision"])
@@ -613,7 +619,7 @@ def known_at_selection_semantics(ctx):
     eq([(e["payment"]["payment_id"], e["payment"]["amount"], e["revision"])
         for e in st["entries"]], [("p1", 1500, 1), ("p2", 300, 1)],
        "rev1 selected at that knowledge")
-    st = ada.statement(f"known_at={S(-60)}")
+    st = ada.statement(f"known_at={future(60)}")
     eq([e["payment"]["payment_id"] for e in st["entries"]], ["p1", "p2", "p3"],
        "effective_at unchanged -> original order")
     eq(st["entries"][0]["payment"]["amount"], 1200, "selected amount (R256)")
@@ -622,7 +628,7 @@ def known_at_selection_semantics(ctx):
     r = ada.correct("p1", {"expected_revision": 2, "amount": 1200,
                            "effective_at": S(3500), "reason": "moved"}, key="kn2")
     eq(r.status, 201, "correction moving effective_at")
-    st = ada.statement(f"known_at={S(-60)}")
+    st = ada.statement(f"known_at={future(60)}")
     eq([e["payment"]["payment_id"] for e in st["entries"]], ["p2", "p1", "p3"],
        "ordered by selected effective_at, then id (R254)")
     eq([e["balance_after"] for e in st["entries"]], [10300, 9100, 8900],
@@ -633,19 +639,19 @@ def known_at_selection_semantics(ctx):
 def statement_known_at_window_and_combo(ctx):
     ada, bob, cyd = hist_users(ctx)
     eq(ada.correct("p1", CORR_BODY, key="w1").status, 201, "correction")
-    st = ada.statement(f"from={S(4000)}&to={S(3000)}&known_at={S(-60)}")
+    st = ada.statement(f"from={S(4000)}&to={S(3000)}&known_at={future(60)}")
     eq([e["payment"]["payment_id"] for e in st["entries"]], ["p2"],
        "half-open window retained under known_at")
     eq(st["opening_balance"], 8800,
        "opening uses selected revisions, strict before from")
     for f in ("revision", "effective_at", "recorded_at"):
         expect(f in st["entries"][0], f"entry carries {f} (R255)")
-    m = ada.me(f"as_of={S(5000)}&known_at={S(-60)}")
+    m = ada.me(f"as_of={S(5000)}&known_at={future(60)}")
     eq(m["balance"], 8800, "as_of inclusive under known_at (R250)")
-    m = ada.me(f"as_of={S(-3600)}&known_at={S(-3600)}")
+    m = ada.me(f"as_of={future(3600)}&known_at={future(3600)}")
     eq(m["balance"], 8900, "future as_of and known_at both allowed (R251); "
        "decrease of the sent p1 credits ada")
-    st = ada.statement(f"known_at={S(-60)}")
+    st = ada.statement(f"known_at={future(60)}")
     eq(sum(1 for e in st["entries"] if e["payment"]["payment_id"] == "p1"), 1,
        "exactly one entry for the corrected payment (R258)")
 
@@ -967,12 +973,20 @@ def me_historical_holds_lifecycle(ctx):
     e1 = ada.authorize("bob", 150, key="h-e")
     eq(e1.status, 201, "short-ttl authorize")
     exp = e1.json["expires_at"]
+    aid_e = e1.json["authorization_id"]
+    live = [x for x in ada.list_auths() if x["authorization_id"] == aid_e][0]
+    eq(live["status"], "open", "live /authorizations has no as_of: with real "
+       "time still inside the ttl it reads open (R281 distinction)")
+    eq(live["closed_at"], None, "closed_at null while open, live view")
     eq(ada.me(f"as_of={iso(parse_ts(exp) - timedelta(seconds=1))}")["held"], 150,
-       "still held just before expiry")
+       "still held just before expiry (simulated as_of)")
     m = ada.me(f"as_of={exp}")
     eq(m["held"], 0, "expiry releases at expires_at exactly (R278)")
     eq(m["available"], m["total"], "available restored")
-    a = ada.list_auths()[0]
+    time.sleep(2.2)  # SA-9 family: let real time pass the ttl before the live read
+    a = [x for x in ada.list_auths() if x["authorization_id"] == aid_e][0]
+    eq(a["status"], "expired", "lazy expiry shows on the live endpoint once "
+       "real time passes the deadline")
     eq(a["closed_at"], exp, "expired auth closed at its deadline")
     # beyond now: an open hold expires at its deadline (R280); request start w/o as_of
     ctx.reset(fixture([fx_user("u_ada", "ada", 10000), fx_user("u_bob", "bob", 0)]))
@@ -1098,7 +1112,7 @@ def new_accounts_open_at_zero(ctx):
     eq(st["opening_balance"], 0, "statement opening 0")
     eq(st["closing_balance"], 0, "statement closing 0")
     eq(st["entries"], [], "no entries")
-    eq(zed.me(f"as_of={S(-3600)}")["balance"], 0, "any as_of reads zero")
+    eq(zed.me(f"as_of={future(3600)}")["balance"], 0, "any as_of reads zero")
     ada = User_(ctx.api, "ada").login()
     r = ada.pay(zed.handle, 25, key="z-first")
     eq(r.status, 201, "first payment into the zero account")
@@ -1132,7 +1146,7 @@ def historical_total_follows_revisions(ctx):
     eq(m["total"], 1500, "known_at after both original recordings but before the "
        "correction's: rev1 total 1500 (R283)")
     eq(m["held"], 500, "historical held")
-    m = payer.me(f"as_of={S(4500)}&known_at={S(-60)}")
+    m = payer.me(f"as_of={S(4500)}&known_at={future(60)}")
     eq(m["total"], 700, "as_of between g1 and the hold: only the revised g1")
     eq(payer.me(f"as_of={S(3900)}")["held"], 500, "hold active just after creation")
 
