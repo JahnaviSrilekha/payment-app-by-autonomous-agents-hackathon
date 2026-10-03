@@ -272,6 +272,22 @@ class TestT27Snapshots(unittest.TestCase):
         self.assertEqual(linked[0]["payment"]["payment_id"], capture["payment_id"])
         self.assertEqual(len(s["entries"]), 4)  # three seeded payments + one capture
 
+    def test_export_works_after_a_snapshot_exists(self):
+        """Design section 23 (R265): statement_snapshots are never exported. The
+        regression the reviewer's rejection pinned: once any snapshot exists, GET
+        /_test/export must still return 200 — the snapshots are silently omitted,
+        and the export round-trips."""
+        self.client.request("POST", "/payments", {"to_handle": "bob", "amount": 100},
+                            token=self.ada, key="export-1")
+        self.get(self.ada)  # creates a snapshot
+        status, export, _ = self.client.request("GET", "/_test/export")
+        self.assertEqual(status, 200)
+        self.assertNotIn("statement_snapshots", export["state"])
+        status, payload, _ = self.client.request("POST", "/_test/import", export)
+        self.assertEqual(status, 204, payload)
+        # after import the snapshots are gone but statements work normally again
+        self.assertTrue(self.get(self.ada)["snapshot"])
+
     def test_snapshot_stable_under_concurrent_writes(self):
         """R268/R290 under load: readers paging a frozen snapshot while concurrent
         payments land all see the identical frozen page; a fresh statement sees the

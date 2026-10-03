@@ -122,14 +122,17 @@ def statement(ctx, user, service):
                                                 to_instant, known_at)
     token = ids.new_id("snap")  # A19: opaque, server-generated (ADR-003 scheme)
     # R261: the snapshot freezes selected revisions, window, balances and entries.
+    # The instants are stored as RFC 3339 strings — the record never leaves memory
+    # (R265: it is not exported), but staying JSON-clean keeps every consumer safe.
+    now_string = now.isoformat(timespec="seconds")
     service["statement_snapshots"][token] = {
         "user_id": user["id"],
         "entries": entries,
         "opening_balance": opening,
         "closing_balance": closing,
-        "from_used": from_instant,
-        "to_used": to_instant,
-        "known_at_used": known_at,
+        "from_used": ctx.query.get("from", [None])[0],
+        "to_used": ctx.query.get("to", [None])[0] or now_string,
+        "known_at_used": ctx.query.get("known_at", [None])[0] or now_string,
     }
     return 200, {
         "opening_balance": opening,

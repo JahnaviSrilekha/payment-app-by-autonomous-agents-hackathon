@@ -357,9 +357,12 @@ def export_snapshot():
     """Deep-copy the whole state while holding STATE_LOCK (caller holds it), then wrap.
     The idempotency dict is keyed by (user, method, path, key) tuples in memory and by a
     record list in the exported JSON. Serialization happens outside the lock; later
-    writes never change the snapshot."""
+    writes never change the snapshot. statement_snapshots are never exported (design
+    section 23, R265: a snapshot's loss across a restart is already permitted — a
+    re-paged snapshot after a restart is simply a fresh GET /statement call)."""
     service = state_mod.get()
     snapshot = copy.deepcopy(service)
+    snapshot.pop("statement_snapshots", None)
     snapshot["idempotency"] = idempotency.export_records(service)
     return {
         "track": TRACK,
