@@ -1,4 +1,4 @@
-# Pocketful — stage 3: build and run
+# Pocketful — stage 4: build and run
 
 The service is a single Python 3.12 process using only the standard library — there are
 no dependencies to install and no runtime network access is needed.
@@ -6,15 +6,15 @@ no dependencies to install and no runtime network access is needed.
 ## Build
 
 ```sh
-docker build -t pocketful-stage3 .
+docker build -t pocketful-stage4 .
 ```
 
-(run from this `stage-3/` directory, which contains the `Dockerfile`)
+(run from this `stage-4/` directory, which contains the `Dockerfile`)
 
 ## Start
 
 ```sh
-docker run --rm -e PORT=8080 -p 8080:8080 pocketful-stage3
+docker run --rm -e PORT=8080 -p 8080:8080 pocketful-stage4
 ```
 
 The service listens on `0.0.0.0` on the port given by the `PORT` environment variable
@@ -24,7 +24,7 @@ ready, well within 60 seconds of container start.
 ## One-liner (build and start without manual setup)
 
 ```sh
-docker build -t pocketful-stage3 . && docker run --rm -e PORT=8080 -p 8080:8080 pocketful-stage3
+docker build -t pocketful-stage4 . && docker run --rm -e PORT=8080 -p 8080:8080 pocketful-stage4
 ```
 
 ## Running without Docker
