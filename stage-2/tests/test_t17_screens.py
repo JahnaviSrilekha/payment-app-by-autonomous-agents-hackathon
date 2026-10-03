@@ -76,17 +76,20 @@ class TestT17Screens(T17Base):
         status, ctype, _ = request("GET", "/login")
         self.assertEqual(status, 404)
 
-    def test_wiring_posts_to_stage1_endpoints(self):
-        with open("src/static/app.js", encoding="utf-8") as f:
-            js = f.read()
-        self.assertIn('"/auth/" + boot.mode', js)  # R114: stage-1 POST /auth/signup|login
-        self.assertIn("setSession(outcome.body.token)", js)
+    def test_forms_submit_to_stage1_endpoints(self):
+        """R114: the UI submits to the same stage-1 endpoints; the form posts natively
+        so a lost session can never depend on a fetch surviving a navigation."""
+        _, _, body = request("GET", "/login", {"Accept": "text/html"})
+        self.assertIn('action="/auth/login"', body)
+        _, _, body = request("GET", "/signup", {"Accept": "text/html"})
+        self.assertIn('action="/auth/signup"', body)
 
     def test_app_boot_dispatches_by_screen(self):
         with open("src/static/app-boot.js", encoding="utf-8") as f:
             boot = f.read()
-        self.assertIn("initAuth", boot)
         self.assertIn("__PEBBLE_BOOT__", boot)
+        # the logout button is wired on every signed-in screen (R113)
+        self.assertIn("logout-button", boot)
 
     def test_session_area_when_signed_in(self):
         client = util.Client(self.port)

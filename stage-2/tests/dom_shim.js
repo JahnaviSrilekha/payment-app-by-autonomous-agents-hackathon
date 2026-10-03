@@ -16,6 +16,12 @@ function fakeEl(tag) {
     innerHTML: "",
     hidden: false,
     className: "",
+    disabled: false,
+    classList: {
+      add(c) { if (!el.className.includes(c)) el.className = (el.className + " " + c).trim(); },
+      remove(c) { el.className = el.className.split(/\s+/).filter((x) => x && x !== c).join(" "); },
+      contains(c) { return el.className.split(/\s+/).includes(c); },
+    },
     addEventListener(type, fn) {
       el.listeners[type] = fn;
     },

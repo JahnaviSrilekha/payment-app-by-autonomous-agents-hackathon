@@ -146,9 +146,12 @@ def text_input(testid, name=None, value="", placeholder="", inputmode=None,
     )
 
 
-def submit_button(testid, label):
-    return ('<button type="button" class="button button-primary" data-testid="%s"'
-            ' id="%s">%s</button>' % (esc(testid), esc(testid), esc(label)))
+def submit_button(testid, label, form_submit=False):
+    """form_submit=True for the native auth forms (R114); JS-wired forms keep
+    type="button" so a stray Enter never double-submits."""
+    kind = "submit" if form_submit else "button"
+    return ('<button type="%s" class="button button-primary" data-testid="%s"'
+            ' id="%s">%s</button>' % (kind, esc(testid), esc(testid), esc(label)))
 
 
 def error_banner(testid):
@@ -161,48 +164,63 @@ def error_banner(testid):
 # --- signup and login (T17, R113/R114) -------------------------------------------
 
 
-def signup_page(user=None):
+def auth_error_banner(message):
+    """R113: auth-error exists only when there is one. The native form flow returns
+    the failure by redirecting back with the message; the fetch flow (other seats'
+    screens) creates the element in place."""
+    if not message:
+        return ""
+    return ('<p class="banner banner-error" role="alert" data-testid="auth-error">'
+            "%s</p>" % esc(message))
+
+
+def signup_page(user=None, error="", email="", display_name_value=""):
     inputs = (
         field("signup-email", "Email",
-              text_input("signup-email", placeholder="you@example.com",
+              text_input("signup-email", name="email", value=email,
+                         placeholder="you@example.com",
                          autocomplete="email", required=True),
               "We derive your handle from the email.")
         + field("signup-password", "Password (8+ characters)",
-                '<input class="input" id="signup-password" name="signup-password"'
+                '<input class="input" id="signup-password" name="password"'
                 ' type="password" placeholder="At least 8 characters"'
                 ' autocomplete="new-password" required data-testid="signup-password">')
         + field("signup-display-name", "Display name",
-                text_input("signup-display-name", placeholder="Ada", required=True))
+                text_input("signup-display-name", name="display_name",
+                           value=display_name_value, placeholder="Ada", required=True))
     )
     body = (
         '<section class="card"><h1 class="card-title">Create your %s account</h1>'
-        '<form class="form" id="signup-form" novalidate>%s%s%s</form>'
+        '<form class="form" id="signup-form" method="post" action="/auth/signup"'
+        " novalidate>%s%s%s</form>"
         '<p class="muted">Already have an account? <a href="/login">Log in</a>.</p>'
         "</section>"
-        % (esc(APP_NAME), inputs, error_banner("auth-error"),
-           submit_button("signup-submit", "Sign up"))
+        % (esc(APP_NAME), inputs, auth_error_banner(error),
+           submit_button("signup-submit", "Sign up", form_submit=True))
     )
     return page("Sign up", body, active="/signup", user=user,
                 boot={"screen": "auth", "mode": "signup"})
 
 
-def login_page(user=None):
+def login_page(user=None, error="", email=""):
     inputs = (
         field("login-email", "Email",
-              text_input("login-email", placeholder="you@example.com",
+              text_input("login-email", name="email", value=email,
+                         placeholder="you@example.com",
                          autocomplete="email", required=True))
         + field("login-password", "Password",
-                '<input class="input" id="login-password" name="login-password"'
+                '<input class="input" id="login-password" name="password"'
                 ' type="password" placeholder="Your password"'
                 ' autocomplete="current-password" required data-testid="login-password">')
     )
     body = (
         '<section class="card"><h1 class="card-title">Welcome back to %s</h1>'
-        '<form class="form" id="login-form" novalidate>%s%s%s</form>'
+        '<form class="form" id="login-form" method="post" action="/auth/login"'
+        " novalidate>%s%s%s</form>"
         '<p class="muted">New here? <a href="/signup">Create an account</a>.</p>'
         "</section>"
-        % (esc(APP_NAME), inputs, error_banner("auth-error"),
-           submit_button("login-submit", "Log in"))
+        % (esc(APP_NAME), inputs, auth_error_banner(error),
+           submit_button("login-submit", "Log in", form_submit=True))
     )
     return page("Log in", body, active="/login", user=user,
                 boot={"screen": "auth", "mode": "login"})
@@ -217,8 +235,9 @@ def wallet_section(me):
     held_html = ""
     if me["held"] > 0:
         held_html = (
-            '<p class="wallet-secondary"><span class="wallet-chip wallet-chip-held"'
-            ' data-testid="wallet-held" data-amount="%d">%s held</span></p>'
+            '<p class="wallet-secondary"><span class="muted">Held</span> '
+            '<span class="wallet-chip wallet-chip-held"'
+            ' data-testid="wallet-held" data-amount="%d">%s</span></p>'
             % (me["held"], esc(format_amount(me["held"], me["minor_units"],
                                              me["currency"])))
         )
@@ -227,8 +246,9 @@ def wallet_section(me):
         '<div class="wallet">'
         '<p class="muted">Available to spend</p>'
         '<p class="wallet-headline" data-testid="wallet-available" data-amount="%d">%s</p>'
+        '<p class="wallet-secondary muted">Total balance</p>'
         '<p class="wallet-secondary" data-testid="wallet-balance" data-amount="%d">'
-        "Total %s</p>%s"
+        "%s</p>%s"
         '<button type="button" class="button button-secondary" data-testid="wallet-refresh"'
         ' id="wallet-refresh">Refresh</button>'
         "</div></section>"
@@ -379,8 +399,6 @@ def request_row(request, direction, minor_units, currency):
 
 
 def requests_section(requests, direction, minor_units, currency, incoming):
-    if not requests:
-        return ""
     rows = "".join(request_row(r, direction, minor_units, currency) for r in requests)
     title = "Incoming" if incoming else "Outgoing"
     testid = "incoming-list" if incoming else "outgoing-list"
@@ -389,20 +407,28 @@ def requests_section(requests, direction, minor_units, currency, incoming):
             % (title, testid, rows))
 
 
-def requests_page(user, incoming, outgoing, minor_units, currency, boot_extra=None):
+def requests_page(user, incoming, outgoing, me, payments, boot_extra=None):
+    """R129: the balance, the feed and the request lists live on the same page, so the
+    requests screen carries the wallet card and the activity feed too."""
     if user is None:
         return page("Requests", signed_out_home(), active="/requests", boot={
             "screen": "requests", "signed_in": False})
     boot = {"screen": "requests", "signed_in": True, "handle": user["handle"],
-            "minor_units": minor_units, "currency": currency}
+            "minor_units": me["minor_units"], "currency": me["currency"]}
     if boot_extra:
         boot.update(boot_extra)
     empty = ('<p class="empty" data-testid="empty-requests">'
              "No requests yet. Ask someone for money from the home screen.</p>"
              if not incoming and not outgoing else "")
-    body = (requests_section(incoming, "incoming", minor_units, currency, True)
-            + requests_section(outgoing, "outgoing", minor_units, currency, False)
-            + empty + error_banner("request-error"))
+    body = (wallet_section(me)
+            + '<div class="grid-2">'
+            + requests_section(incoming, "incoming", me["minor_units"],
+                               me["currency"], True)
+            + requests_section(outgoing, "outgoing", me["minor_units"],
+                               me["currency"], False)
+            + "</div>"
+            + empty
+            + activity_section(payments, me["minor_units"], me["currency"]))
     return page("Requests", body, active="/requests", user=user, boot=boot)
 
 

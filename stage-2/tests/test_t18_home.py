@@ -86,7 +86,8 @@ class TestT18HomeSignedIn(T18Base):
         body = self.home()
         self.assertIn('data-testid="wallet-balance"', body)
         self.assertIn('data-amount="10000"', body)
-        self.assertIn("100.00 EUR", body)  # formatted total (R120)
+        # R115: the element text is exactly the formatted amount
+        self.assertIn('data-testid="wallet-balance" data-amount="10000">100.00 EUR<', body)
         self.assertIn('data-testid="wallet-available"', body)
         self.assertIn("100.00 EUR", body)
         self.assertNotIn('data-testid="wallet-held"', body)  # absent at held == 0 (R187)
@@ -105,7 +106,7 @@ class TestT18HomeSignedIn(T18Base):
         self.assertIn("20.00 EUR", body)
         self.assertIn('data-testid="wallet-available"', body)
         self.assertIn('data-amount="8000"', body)
-        self.assertIn("80.00 EUR", body)
+        self.assertIn('data-amount="8000">80.00 EUR<', body)
         # available renders as the headline (the wallet-headline class)
         available_pos = body.index('data-testid="wallet-available"')
         self.assertIn('class="wallet-headline"', body[available_pos - 60:available_pos])

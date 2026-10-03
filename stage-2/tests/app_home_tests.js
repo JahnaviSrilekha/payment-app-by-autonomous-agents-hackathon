@@ -172,6 +172,29 @@ t("wallet-held appears only while held is positive (R187/R132)", async () => {
   assert.ok(!byTestid("wallet-held"), "held chip removed at zero");
 });
 
+t("pay shows a loading state while the write is in flight (R110/R136)", async () => {
+  clearFetchCalls();
+  const page = homePage();
+  byTestid("pay-handle").value = "bob";
+  byTestid("pay-amount").value = "3.00";
+  setFetchImpl(async (url) => {
+    if (url === "/payments") {
+      await new Promise((r) => setTimeout(r, 300)); // slow write
+      return { status: 201, text: async () => JSON.stringify({ payment_id: "p_1" }) };
+    }
+    return { status: 200, text: async () => JSON.stringify({ payments: [] }) };
+  });
+  Pebble.initHome(BOOT);
+  clearFetchCalls();
+  const clicking = page.paySubmit.listeners.click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(page.paySubmit.disabled || page.paySubmit.getAttribute("aria-busy") === "true"
+    || page.paySubmit.className.includes("is-loading"),
+    "submit shows a visible loading state during the write");
+  await clicking;
+  assert.ok(!page.paySubmit.disabled, "loading state cleared after the write");
+});
+
 Promise.all(pending).then(() => {
   if (failures.length > 0) {
     process.stdout.write(`\n${failures.length} failed, ${passed} passed\n`);

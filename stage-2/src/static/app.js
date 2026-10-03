@@ -275,6 +275,28 @@
     return fetchJSON(path, { method: method, body: body, headers: headers });
   }
 
+  function withBusy(button, run) {
+    /* R110/R136: a visible loading state while the write is in flight. */
+    if (!button) {
+      return run();
+    }
+    button.disabled = true;
+    button.classList.add("is-loading");
+    button.setAttribute("aria-busy", "true");
+    var done = function () {
+      button.disabled = false;
+      button.classList.remove("is-loading");
+      button.removeAttribute("aria-busy");
+    };
+    return Promise.resolve(run()).then(function (result) {
+      done();
+      return result;
+    }, function (err) {
+      done();
+      throw err;
+    });
+  }
+
   /* --- transient message elements ---------------------------------------------
    * Error/uncertain messages exist in the DOM only while there is one (R115:
    * "present only when there is one"); created on demand, removed on success. */
@@ -298,9 +320,13 @@
     el.setAttribute("role", "alert");
     el.textContent = message;
     var host = messageHost(testid);
+    if (!host) {
+      document.body.appendChild(el);
+      return;
+    }
     var anchor = host.querySelector(".button, button");
-    if (anchor) {
-      host.insertBefore(el, anchor);
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(el, anchor); // the anchor may be nested
     } else {
       host.insertBefore(el, host.firstChild);
     }
@@ -356,7 +382,7 @@
     available.setAttribute("data-amount", String(me.available));
     available.textContent = formatAmount(me.available, me.minor_units, me.currency);
     balance.setAttribute("data-amount", String(me.total));
-    balance.textContent = "Total " + formatAmount(me.total, me.minor_units, me.currency);
+    balance.textContent = formatAmount(me.total, me.minor_units, me.currency);
     var held = fieldOf("wallet-held");
     if (me.held > 0) {
       if (!held) {
@@ -369,7 +395,7 @@
         balance.parentNode.insertBefore(paragraph, balance.nextSibling);
       }
       held.setAttribute("data-amount", String(me.held));
-      held.textContent = formatAmount(me.held, me.minor_units, me.currency) + " held";
+      held.textContent = formatAmount(me.held, me.minor_units, me.currency);
     } else if (held) {
       held.parentNode.remove();
     }
@@ -482,8 +508,10 @@
     document.getElementById("wallet-refresh").addEventListener("click", refresh);
 
     var payForm = document.getElementById("pay-form");
-    payForm.querySelector('[data-testid="pay-submit"]').addEventListener("click",
-      async function () {
+    var payButton = payForm.querySelector('[data-testid="pay-submit"]');
+    payButton.addEventListener("click",
+      function () {
+        return withBusy(payButton, async function () {
         var values = {
           to_handle: val("pay-handle"),
           amount: val("pay-amount"),
@@ -524,6 +552,7 @@
         // refused (R133): show pay-error, refresh balance/feed, preserve inputs
         showMessage("pay-error", "error", errorMessage(outcome.body, "Payment refused"));
         await refresh();
+        });
       });
 
     var requestForm = document.getElementById("request-form");
@@ -636,6 +665,12 @@
     var emptyHost = fieldOf("empty-requests");
     if (anyRows && emptyHost) {
       emptyHost.remove();
+    } else if (!anyRows && !emptyHost) {
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.setAttribute("data-testid", "empty-requests");
+      empty.textContent = "No requests yet. Ask someone for money from the home screen.";
+      document.querySelector("main").appendChild(empty);
     }
   }
 
@@ -647,20 +682,291 @@
     var cfg = boot;
 
     async function refresh() {
+      // R129: balance, feed and request lists refresh together on this page
       var seq = guard.issue();
       var results = await Promise.allSettled([
+        apiFetch("GET", "/me"),
+        apiFetch("GET", "/activity?limit=50"),
         apiFetch("GET", "/requests?direction=incoming&limit=50"),
         apiFetch("GET", "/requests?direction=outgoing&limit=50")
       ]);
       if (!guard.arrive(seq)) {
         return;
       }
-      var incoming = results[0].status === "fulfilled"
-        && results[0].value.status === 200
-        ? (results[0].value.body.requests || []) : null;
-      var outgoing = results[1].status === "fulfilled"
-        && results[1].value.status === 200
-        ? (results[1].value.body.requests || []) : null;
+      if (results[0].status === "fulfilled" && results[0].value.status === 200) {
+        renderWallet(results[0].value.body);
+      }
+      if (results[1].status === "fulfilled" && results[1].value.status === 200) {
+        renderFeed(results[1].value.body.payments || [], cfg);
+      }
+      var incoming = results[2].status === "fulfilled"
+        && results[2].value.status === 200
+        ? (results[2].value.body.requests || []) : null;
+      var outgoing = results[3].status === "fulfilled"
+        && results[3].value.status === 200
+        ? (results[3].value.body.requests || []) : null;
+      if (incoming !== null && outgoing !== null) {
+        renderRequests(incoming, outgoing, cfg);
+      }
+    }
+
+    document.querySelector("main").addEventListener("click", async function (event) {
+      var button = event.target.closest("button");
+      if (!button) {
+        return;
+      }
+      var testid = button.getAttribute("data-testid") || "";
+      var match = testid.match(/^request-(pay|decline|cancel)-(.+)$/);
+      if (!match) {
+        return;
+      }
+      var action = match[1];
+      var rid = match[2];
+      removeMessage("request-error");
+      var outcome;
+      try {
+        if (action === "pay") {
+          var key = await deriveKey("request-pay",
+            [rid, val("request-visibility") || "public"]);
+          outcome = await apiFetch("POST", "/requests/" + rid + "/pay", {}, key);
+        } else {
+          outcome = await apiFetch("POST", "/requests/" + rid + "/" + action);
+        }
+      } catch (err) {
+        outcome = null;
+      }
+      if (outcome === null) {
+        showMessage("request-error", "uncertain",
+          "We couldn't confirm that action — it may not have gone through.");
+        return;
+      }
+      if (classifyOutcome(outcome.status) !== "success") {
+        // R134: a request cancelled elsewhere while its pay button is visible
+        showMessage("request-error", "error",
+          errorMessage(outcome.body, "That request is no longer available"));
+      }
+      await refresh(); // the stale button disappears on the resulting refresh
+    });
+
+    refresh();
+  }
+
+  /* --- split screen (T20) ----------------------------------------------------------- */
+
+  function parseHandles(raw) {
+    return String(raw || "").split(",").map(function (h) {
+      return h.trim();
+    }).filter(function (h) {
+      return h.length > 0;
+    });
+  }
+
+  function renderSplitPreview(amountMinor, handles, cfg) {
+    var preview = fieldOf("split-preview");
+    if (!preview) {
+      return;
+    }
+    var shares = splitShares(amountMinor, handles.length);
+    var list = el("ul", "list");
+    handles.forEach(function (handle, i) {
+      var item = el("li", "row");
+      var main = el("div", "row-main");
+      main.appendChild(el("p", "row-title", esc(handle)));
+      item.appendChild(main);
+      var money = el("p", "row-money",
+        formatAmount(shares[i], cfg.minor_units, cfg.currency));
+      money.setAttribute("data-testid", "split-share-" + handle);
+      money.setAttribute("data-amount", String(shares[i]));
+      item.appendChild(money);
+      list.appendChild(item);
+    });
+    var title = el("h2", "card-title", "Preview");
+    while (preview.firstChild) {
+      preview.removeChild(preview.firstChild);
+    }
+    preview.appendChild(title);
+    preview.appendChild(list);
+    preview.hidden = false;
+  }
+
+  function hideSplitPreview() {
+    var preview = fieldOf("split-preview");
+    if (preview) {
+      preview.hidden = true;
+      preview.innerHTML = "";
+    }
+  }
+
+  function initSplit(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var cfg = boot;
+    var form = document.getElementById("split-form");
+
+    function updatePreview() {
+      var parsed = parseDecimalAmount(val("split-amount"), cfg.minor_units);
+      var handles = parseHandles(val("split-handles"));
+      if (!parsed.ok || handles.length < 1) {
+        hideSplitPreview();
+        return;
+      }
+      renderSplitPreview(parsed.minor, handles, cfg);
+    }
+
+    ["split-amount", "split-handles"].forEach(function (id) {
+      document.getElementById(id).addEventListener("input", updatePreview);
+    });
+
+    form.querySelector('[data-testid="split-submit"]').addEventListener("click",
+      async function () {
+        var amountRaw = val("split-amount");
+        var handles = parseHandles(val("split-handles"));
+        var note = val("split-note");
+        var parsed = parseDecimalAmount(amountRaw, cfg.minor_units);
+        if (!parsed.ok) {
+          showMessage("split-error", "error", parsed.error); // R119
+          return;
+        }
+        if (handles.length < 1) {
+          showMessage("split-error", "error", "Add at least one participant handle");
+          return;
+        }
+        removeMessage("split-error");
+        var body = {
+          amount: parsed.minor,
+          participant_handles: handles,
+          note: note
+        };
+        var key = await deriveKey("split-form", [amountRaw, val("split-handles"), note]);
+        var outcome;
+        try {
+          outcome = await apiFetch("POST", "/splits", body, key);
+        } catch (err) {
+          outcome = null;
+        }
+        if (outcome === null) {
+          showMessage("split-error", "uncertain",
+            "We couldn't confirm this split — press Split again to check.");
+          return;
+        }
+        if (classifyOutcome(outcome.status) === "success") {
+          // R129: any mechanism is fine — a full navigation waits for the write
+          window.location.href = "/requests";
+          return;
+        }
+        showMessage("split-error", "error",
+          errorMessage(outcome.body, "Split refused")); // inputs preserved
+      });
+  }
+
+  /* --- requests screen (T19) ------------------------------------------------------ */
+
+  function requestNode(request, direction, cfg) {
+    var rid = request.request_id;
+    var item = el("li", "row");
+    item.setAttribute("data-testid", "request-item-" + rid);
+    item.setAttribute("data-status", request.status);
+    var main = el("div", "row-main");
+    var title = el("p", "row-title",
+      esc(request.requester_handle) + " \u2192 " + esc(request.payer_handle));
+    var chip = el("span", "status-chip status-" + request.status, request.status);
+    title.appendChild(chip);
+    main.appendChild(title);
+    var sub = el("p", "row-sub");
+    sub.appendChild(span("request-note-" + rid, request.note || ""));
+    main.appendChild(sub);
+    item.appendChild(main);
+    var money = el("p", "row-money",
+      formatAmount(request.amount, cfg.minor_units, cfg.currency));
+    money.setAttribute("data-testid", "request-amount-" + rid);
+    money.setAttribute("data-amount", String(request.amount));
+    item.appendChild(money);
+    var actions = el("div");
+    if (direction === "incoming" && request.status === "pending") {
+      var pay = el("button", "button button-primary", "Pay");
+      pay.setAttribute("type", "button");
+      pay.setAttribute("data-testid", "request-pay-" + rid);
+      actions.appendChild(pay);
+      var decline = el("button", "button button-danger", "Decline");
+      decline.setAttribute("type", "button");
+      decline.setAttribute("data-testid", "request-decline-" + rid);
+      actions.appendChild(decline);
+    }
+    if (direction === "outgoing" && request.status === "pending") {
+      var cancel = el("button", "button button-quiet", "Cancel");
+      cancel.setAttribute("type", "button");
+      cancel.setAttribute("data-testid", "request-cancel-" + rid);
+      actions.appendChild(cancel);
+    }
+    item.appendChild(actions);
+    return item;
+  }
+
+  function renderRequests(incoming, outgoing, cfg) {
+    var sections = [
+      ["incoming-list", incoming, "incoming"],
+      ["outgoing-list", outgoing, "outgoing"]
+    ];
+    var anyRows = incoming.length + outgoing.length > 0;
+    sections.forEach(function (entry) {
+      var testid = entry[0];
+      var rows = entry[1];
+      var direction = entry[2];
+      var host = fieldOf(testid);
+      if (!host) {
+        return;
+      }
+      while (host.firstChild) {
+        host.removeChild(host.firstChild);
+      }
+      rows.forEach(function (r) {
+        host.appendChild(requestNode(r, direction, cfg));
+      });
+    });
+    var emptyHost = fieldOf("empty-requests");
+    if (anyRows && emptyHost) {
+      emptyHost.remove();
+    } else if (!anyRows && !emptyHost) {
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.setAttribute("data-testid", "empty-requests");
+      empty.textContent = "No requests yet. Ask someone for money from the home screen.";
+      document.querySelector("main").appendChild(empty);
+    }
+  }
+
+  function initRequests(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var guard = createRefreshGuard();
+    var cfg = boot;
+
+    async function refresh() {
+      // R129: balance, feed and request lists refresh together on this page
+      var seq = guard.issue();
+      var results = await Promise.allSettled([
+        apiFetch("GET", "/me"),
+        apiFetch("GET", "/activity?limit=50"),
+        apiFetch("GET", "/requests?direction=incoming&limit=50"),
+        apiFetch("GET", "/requests?direction=outgoing&limit=50")
+      ]);
+      if (!guard.arrive(seq)) {
+        return;
+      }
+      if (results[0].status === "fulfilled" && results[0].value.status === 200) {
+        renderWallet(results[0].value.body);
+      }
+      if (results[1].status === "fulfilled" && results[1].value.status === 200) {
+        renderFeed(results[1].value.body.payments || [], cfg);
+      }
+      var incoming = results[2].status === "fulfilled"
+        && results[2].value.status === 200
+        ? (results[2].value.body.requests || []) : null;
+      var outgoing = results[3].status === "fulfilled"
+        && results[3].value.status === 200
+        ? (results[3].value.body.requests || []) : null;
       if (incoming !== null && outgoing !== null) {
         renderRequests(incoming, outgoing, cfg);
       }
@@ -880,7 +1186,6 @@
     renderWallet: renderWallet,
     renderFeed: renderFeed,
     initHome: initHome,
-    initAuth: initAuth,
     renderRequests: renderRequests,
     initRequests: initRequests,
     renderSplitPreview: renderSplitPreview,
