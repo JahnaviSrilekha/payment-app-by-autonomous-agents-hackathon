@@ -973,12 +973,20 @@ def me_historical_holds_lifecycle(ctx):
     e1 = ada.authorize("bob", 150, key="h-e")
     eq(e1.status, 201, "short-ttl authorize")
     exp = e1.json["expires_at"]
+    aid_e = e1.json["authorization_id"]
+    live = [x for x in ada.list_auths() if x["authorization_id"] == aid_e][0]
+    eq(live["status"], "open", "live /authorizations has no as_of: with real "
+       "time still inside the ttl it reads open (R281 distinction)")
+    eq(live["closed_at"], None, "closed_at null while open, live view")
     eq(ada.me(f"as_of={iso(parse_ts(exp) - timedelta(seconds=1))}")["held"], 150,
-       "still held just before expiry")
+       "still held just before expiry (simulated as_of)")
     m = ada.me(f"as_of={exp}")
     eq(m["held"], 0, "expiry releases at expires_at exactly (R278)")
     eq(m["available"], m["total"], "available restored")
-    a = ada.list_auths()[0]
+    time.sleep(2.2)  # SA-9 family: let real time pass the ttl before the live read
+    a = [x for x in ada.list_auths() if x["authorization_id"] == aid_e][0]
+    eq(a["status"], "expired", "lazy expiry shows on the live endpoint once "
+       "real time passes the deadline")
     eq(a["closed_at"], exp, "expired auth closed at its deadline")
     # beyond now: an open hold expires at its deadline (R280); request start w/o as_of
     ctx.reset(fixture([fx_user("u_ada", "ada", 10000), fx_user("u_bob", "bob", 0)]))
