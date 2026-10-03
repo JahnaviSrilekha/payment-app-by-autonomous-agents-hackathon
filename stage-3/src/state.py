@@ -51,6 +51,7 @@ def new_service(currency, minor_units):
         "authorization_ttl_seconds": DEFAULT_AUTHORIZATION_TTL,
         "authorizations": {},
         "authorization_order": [],
+        "statement_snapshots": {},
         "idempotency": {},
         "next_seq": 1,
     }
