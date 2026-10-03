@@ -853,8 +853,13 @@ def ui_testid_presence(ctx):
     page.goto(ctx.base + "/split")
     present("split-amount", "split-handles", "split-note", "split-submit")
     page.goto(ctx.base + "/authorizations")
-    expect(tid(page, "authorization-list").count() or
-           tid(page, "empty-authorizations").count(), "list or empty state")
+    rendered = tid(page, "authorization-list").count() or \
+        tid(page, "empty-authorizations").count()
+    expect(rendered, "list or empty state")
+    if rendered:
+        # R191 sits in the /authorizations UI section: the wallet numbers must
+        # reflect holds on this screen too, not only on /
+        present("wallet-balance", "wallet-available")
     # the authorize form lives on /authorizations or on /
     found = tid(page, "authorize-handle").count() > 0
     if not found:
