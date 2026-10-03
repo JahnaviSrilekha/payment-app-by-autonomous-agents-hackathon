@@ -24,6 +24,7 @@ def payment_response(service, payment):
         "visibility": payment["visibility"],
         "request_id": payment["request_id"],
         "authorization_id": payment.get("authorization_id"),
+        "refund_of": payment.get("refund_of"),
         "settlement_id": payment["settlement_id"],
         "created_at": payment["created_at"],
     }
@@ -31,11 +32,12 @@ def payment_response(service, payment):
 
 def append_payment(service, from_user_id, to_user_id, amount, note, visibility,
                    request_id=None, settlement_id=None, created_at=None,
-                   authorization_id=None):
+                   authorization_id=None, refund_of=None):
     """One atomic debit+credit inside the caller's STATE_LOCK acquisition: the ledger
     append and both balance mutations commit together or not at all (R23, R67).
     authorization_id is set only on capture-created payments (R167); request_id and
-    authorization_id are never both non-null (A9)."""
+    authorization_id are never both non-null (A9). refund_of is set only on refund
+    payments (R301, ADR-008); it is null on every stage-1/2/3 call site (R305)."""
     if created_at is None:
         created_at = state_mod.now_rfc3339()
     payment = {
@@ -48,6 +50,7 @@ def append_payment(service, from_user_id, to_user_id, amount, note, visibility,
         "visibility": visibility,
         "request_id": request_id,
         "authorization_id": authorization_id,
+        "refund_of": refund_of,
         "settlement_id": settlement_id,
         # R214: every payment has a revision history; revision 1 is the original
         # amount with effective_at = recorded_at = created_at (R271: for a settlement

@@ -22,6 +22,7 @@ import errors
 import idempotency
 import ledger
 import payments
+import refunds
 import requests as requests_endpoints
 import settlements
 import splits
@@ -295,6 +296,8 @@ route("GET", r"/activity")(payments.activity)
 route("GET", r"/statement")(statements.statement)
 route("POST", r"/payments/(?P<payment_id>[^/]+)/corrections", idempotent=True)(
     corrections.create_correction)
+route("POST", r"/payments/(?P<payment_id>[^/]+)/refunds", idempotent=True)(
+    refunds.create_refund)
 route("GET", r"/payments/(?P<payment_id>[^/]+)/revisions")(corrections.list_revisions)
 route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
 route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
