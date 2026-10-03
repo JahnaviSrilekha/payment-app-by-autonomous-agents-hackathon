@@ -85,7 +85,7 @@ class TestT22RoundTrips(unittest.TestCase):
         self.client.request("POST", "/authorizations/a_1/capture",
                             {"amount": 600, "final": False}, token=bob, key="cap-1")
         _, export, _ = self.client.request("GET", "/_test/export")
-        self.assertEqual(export["format_version"], 3)  # A20: stage 3 exports version 3
+        self.assertEqual(export["format_version"], 4)  # A28: stage 4 exports version 4
         state = export["state"]
         self.assertEqual(state["authorization_ttl_seconds"], 300)
         self.assertEqual(len(state["authorizations"]), 3)

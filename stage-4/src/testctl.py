@@ -12,8 +12,8 @@ import state as state_mod
 from auth import hash_password
 
 TRACK = "pocketful"
-FORMAT_VERSION = 3
-IMPORT_VERSIONS = (1, 2, 3)
+FORMAT_VERSION = 4
+IMPORT_VERSIONS = (1, 2, 3, 4)
 VALID_MINOR_UNITS = (0, 2, 3)
 REQUEST_STATUSES = ("pending", "paid", "declined", "cancelled")
 AUTHORIZATION_STATUSES = state_mod.AUTHORIZATION_STATUSES
@@ -143,6 +143,7 @@ def build_from_fixture(fixture):
             "request_id": payment.get("request_id"),
             "settlement_id": settlement_id,
             "authorization_id": None,  # seeded payments are stage-1-shaped (R167)
+            "refund_of": None,  # seeded payments are never refunds (R305)
             # R215: the supplied created_at is also the original recorded/effective
             # time — revision 1 (R214), stored verbatim so it is echoed back exactly.
             "revisions": [ledger.initial_revision(amount, created_at)],
@@ -573,6 +574,14 @@ def _build_from_state(raw, version):
             raise ValueError("authorization_order")
         service["authorization_order"].append(authorization_id)
 
+    # A28: refund_of is referentially checked against every payment present in the
+    # export, not just the ones processed before the referring row — payments can
+    # reference any other payment regardless of list order, so the ids are
+    # collected in a first pass and the references validated in the second.
+    payment_ids_in_export = {payment["id"] for payment in raw["payments"]
+                             if isinstance(payment, dict)
+                             and isinstance(payment.get("id"), str)}
+
     for payment in raw["payments"]:
         _require_fields(payment, ("id", "from_user_id", "to_user_id", "amount", "currency",
                                   "note", "visibility", "request_id", "settlement_id",
@@ -586,6 +595,22 @@ def _build_from_state(raw, version):
             raise ValueError("payment authorization_id")
         stored_payment = copy.deepcopy(payment)
         stored_payment.setdefault("authorization_id", None)  # stage-1 payments: null
+        if version >= 4:
+            # A28: refund_of is taken directly from the payload, as stored, never
+            # recomputed; if present and non-null it must name another payment in
+            # the same export (R305/R298's referential-integrity extension of the
+            # authorization_id pattern).
+            refund_of = stored_payment.get("refund_of")
+            if refund_of is not None:
+                if not isinstance(refund_of, str) \
+                        or refund_of not in payment_ids_in_export \
+                        or refund_of == stored_payment["id"]:
+                    raise ValueError("payment refund_of")
+            stored_payment["refund_of"] = refund_of
+        else:
+            # A28: formats 1-3 carry no refund_of — every imported payment defaults
+            # to null (the same defaulting pattern A20 established).
+            stored_payment["refund_of"] = None
         if version >= 3:
             # A20: the exported revisions are the one source of truth — carried
             # through verbatim (a stage-3 round trip preserves correction history,
@@ -597,6 +622,17 @@ def _build_from_state(raw, version):
             # settlement's committed_at, carried on both axes (R271).
             stored_payment.setdefault("revisions", [ledger.initial_revision(
                 stored_payment["amount"], stored_payment["created_at"])])
+        for revision in stored_payment["revisions"]:
+            if version >= 4:
+                # A28: a revision's correction_batch_id, if present, must be a
+                # string or null — no referential check, since nothing else stores
+                # or indexes batch ids (A30). Absent defaults to null.
+                batch_id = revision.get("correction_batch_id")
+                if batch_id is not None and not isinstance(batch_id, str):
+                    raise ValueError("revision correction_batch_id")
+                revision["correction_batch_id"] = batch_id
+            else:
+                revision["correction_batch_id"] = None
         service["payments"].append(stored_payment)
     if version < 3:
         # R216: base_balance is derived exactly as reset derives it — from the

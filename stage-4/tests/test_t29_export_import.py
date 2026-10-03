@@ -106,12 +106,12 @@ class TestT29ExportImport(unittest.TestCase):
             }
         return views
 
-    def test_export_is_always_format_version_3(self):
-        """A20: export always emits format_version 3, never an earlier version."""
+    def test_export_is_always_format_version_4(self):
+        """A28: export always emits format_version 4, never an earlier version."""
         util.reset(self.client, corrections_fixture())
-        self.assertEqual(export(self.client)["format_version"], 3)
+        self.assertEqual(export(self.client)["format_version"], 4)
         util.reset(self.client, util.spec_fixture())
-        self.assertEqual(export(self.client)["format_version"], 3)
+        self.assertEqual(export(self.client)["format_version"], 4)
 
     def test_round_trip_preserves_corrections_holds_and_views(self):
         """Done-test: a stage-3 service with live corrections and historical holds
@@ -192,7 +192,7 @@ class TestT29ExportImport(unittest.TestCase):
         self.assertEqual(state["users"]["u_ada"]["base_balance"], 10000)  # 9500 +500
         self.assertEqual(state["payments"][0]["revisions"], [{
             "revision": 1, "amount": 500, "effective_at": T0, "recorded_at": T0,
-            "reason": "",
+            "reason": "", "correction_batch_id": None,
         }])
         stage2 = {
             "track": "pocketful",
@@ -269,7 +269,7 @@ class TestT29ExportImport(unittest.TestCase):
                 {"expected_revision": 1, "amount": 5400, "reason": "overcharge",
                  "effective_at": T1}, key="t29-bad")
         good = export(self.client)
-        for version in (0, 4, "3"):
+        for version in (0, 5, "3"):
             broken = copy.deepcopy(good)
             broken["format_version"] = version
             self.assertEqual(import_state(self.client, broken)[0], 422, version)

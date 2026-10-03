@@ -120,7 +120,7 @@ class TestT3ExportImport(unittest.TestCase):
         status, payload, _ = self.client.request("GET", "/_test/export")
         self.assertEqual(status, 200)
         self.assertEqual(payload["track"], "pocketful")
-        self.assertEqual(payload["format_version"], 3)  # stage 3 exports version 3 (A20)
+        self.assertEqual(payload["format_version"], 4)  # stage 4 exports version 4 (A28)
         self.assertIsInstance(payload["state"], dict)
 
     def test_export_is_atomic_snapshot(self):
@@ -202,7 +202,7 @@ class TestT3ExportImport(unittest.TestCase):
 
         bad_payloads = [
             {"track": "other", "format_version": 1, "state": good["state"]},
-            {"track": "pocketful", "format_version": 4, "state": good["state"]},  # 3 is accepted since A20
+            {"track": "pocketful", "format_version": 5, "state": good["state"]},  # 4 is accepted since A28
             {"track": "pocketful", "format_version": 1},
             {"track": "pocketful", "format_version": 1, "state": {"currency": "EUR"}},
             {"track": "pocketful", "format_version": 1, "state": dict(good["state"], users={})},

@@ -70,7 +70,8 @@ class TestLedgerPure(unittest.TestCase):
         reason \"\"."""
         rev = ledger.initial_revision(4000, T0_S)
         self.assertEqual(rev, {"revision": 1, "amount": 4000, "effective_at": T0_S,
-                               "recorded_at": T0_S, "reason": ""})
+                               "recorded_at": T0_S, "reason": "",
+                               "correction_batch_id": None})
 
     def test_select_revision_latest_recorded_at_or_before_known_at(self):
         """R247: latest revision recorded at or before known_at (boundary inclusive);
@@ -242,6 +243,7 @@ class TestResetSeeding(unittest.TestCase):
             "revision": 1, "amount": 500,
             "effective_at": "2026-01-01T10:00:00+00:00",
             "recorded_at": "2026-01-01T10:00:00+00:00", "reason": "",
+            "correction_batch_id": None,
         }])
         # the response itself carries the instant with its offset (R193)
         ada = self.login("ada@example.com")

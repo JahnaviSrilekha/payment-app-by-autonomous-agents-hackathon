@@ -189,6 +189,9 @@ def create_correction(ctx, user, service):
         "effective_at": effective_raw,
         "recorded_at": recorded_at,
         "reason": reason,
+        # a single correction is never batch-created (R325's AC: the single
+        # endpoint's revisions expose correction_batch_id: null)
+        "correction_batch_id": None,
     }
     payment["revisions"].append(tentative)
     try:

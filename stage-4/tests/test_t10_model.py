@@ -265,7 +265,7 @@ class TestT10ExportImport(unittest.TestCase):
         util.reset(self.client, hold_fixture())
         token = login_ada(self.client)
         _, export, _ = self.client.request("GET", "/_test/export")
-        self.assertEqual(export["format_version"], 3)  # A20: stage 3 exports version 3
+        self.assertEqual(export["format_version"], 4)  # A28: stage 4 exports version 4
         status, _, _ = self.client.request("POST", "/_test/import", export)
         self.assertEqual(status, 204)
         _, me, _ = self.client.request("GET", "/me", token=token)  # token survives import
@@ -300,8 +300,8 @@ class TestT10ExportImport(unittest.TestCase):
     def test_import_rejects_unknown_versions_and_bad_authorizations(self):
         util.reset(self.client, hold_fixture())
         _, export, _ = self.client.request("GET", "/_test/export")
-        # A20: format_version 3 is accepted since stage 3; 4 remains unknown
-        v4 = dict(export, format_version=4)
+        # A28: format_version 4 is accepted since stage 4; 5 remains unknown
+        v4 = dict(export, format_version=5)
         status, payload, _ = self.client.request("POST", "/_test/import", v4)
         self.assertEqual(status, 422)
         bad_state_cases = [

@@ -20,13 +20,15 @@ import state as state_mod
 def initial_revision(amount, created_at):
     """Revision 1 of every payment: the original amount, effective and recorded at the
     payment's created_at, empty reason (R214, R215, R271 — a settlement member's
-    committed_at is its created_at, so revision 1 carries it on both axes)."""
+    committed_at is its created_at, so revision 1 carries it on both axes). Revision 1
+    is never batch-created, so correction_batch_id is null (R325's AC)."""
     return {
         "revision": 1,
         "amount": amount,
         "effective_at": created_at,
         "recorded_at": created_at,
         "reason": "",
+        "correction_batch_id": None,
     }
 
 
