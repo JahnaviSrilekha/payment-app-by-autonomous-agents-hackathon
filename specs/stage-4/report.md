@@ -59,8 +59,14 @@ Total elapsed: ~5h44m (14:42 → 20:26).
 
 ## Requirement coverage
 
-Every id stage 4 states — R291-R334, A21-A30, design-29 — has at least one passing
-acceptance test (`specs/stage-4/acceptance/COVERAGE.md`); none lack coverage. Stage 1-3's
+Every id stage 4 states — R291-R334, A21-A28, design-29 — has at least one passing
+acceptance test, explicitly tagged in `specs/stage-4/acceptance/COVERAGE.md`; none lack
+coverage. A29 and A30 are not independently tagged there: A29 is an interpretive reading of
+R334 (exercised by that id's own tests, `export_import_v4_roundtrip` and
+`originals_unchanged_after_refund_and_batch`), and A30 is a scope-limiting "no endpoint
+required" statement with no positive behaviour of its own to tag — both are sound, neither
+is an untested requirement (reviewer's precision note on this report, recorded here rather
+than reopened as a fix cycle). Stage 1-3's
 own ids (R1-R290) remain independently verified at their own stage gates and are
 additionally re-exercised in stage-4 conditions (storm/concurrent/refund-and-batch
 interactions) by `storm_stage3_invariants`, `storm_stage4_invariants` and the
