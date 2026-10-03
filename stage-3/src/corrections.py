@@ -93,11 +93,23 @@ def create_correction(ctx, user, service):
     if amount < 0 or amount > MAX_AMOUNT:
         raise errors.validation_failed(
             "amount must be between 0 and %d" % MAX_AMOUNT)
-    reason = state_mod.get_string(ctx.parsed, "reason")
+    # R225/R226 have endpoint-specific rules, so a wrong JSON type is that
+    # endpoint's 422, never the generic 400 (SA-8, stage-1 design section 9 step
+    # 4's rule) — get_string would give 400, so the type is checked here.
+    if "reason" not in ctx.parsed:
+        raise errors.validation_failed("reason is required")
+    if not isinstance(ctx.parsed["reason"], str):
+        raise errors.validation_failed("reason must be a string")
+    reason = ctx.parsed["reason"]
     if not 1 <= len(reason) <= REASON_MAX:
         raise errors.validation_failed(
             "reason must be %d..%d characters" % (1, REASON_MAX))
-    effective_raw = state_mod.get_string(ctx.parsed, "effective_at")
+    if "effective_at" not in ctx.parsed:
+        raise errors.validation_failed("effective_at is required")
+    if not isinstance(ctx.parsed["effective_at"], str):
+        raise errors.validation_failed(
+            "effective_at must be an RFC 3339 timestamp")
+    effective_raw = ctx.parsed["effective_at"]
     try:
         effective_at = state_mod.parse_rfc3339(effective_raw)
     except ValueError:
