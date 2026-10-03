@@ -10,9 +10,10 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import core
-from core import (check_wallet_shape, eq, expect, fixture, fx_auth, fx_pay,
-                  fx_user, iso, parallel, parse_ts, rfc3339_like,
-                  statement_invariants, test)
+from core import (check_auth_invariants, check_wallet_shape, eq, expect,
+                  fixture, fx_auth, fx_pay, fx_user, iso, parallel, parse_ts,
+                  rfc3339_like, statement_invariants, test)
+import time
 
 S = lambda n: core.past(n)  # an instant n seconds before the suite loaded
 
@@ -79,8 +80,9 @@ def seeded_created_at_semantics(ctx):
     st = ada.statement()
     eq(st["entries"][0]["payment"]["created_at"], S(7200), "supplied created_at kept")
     ts_reset = parse_ts(st["entries"][1]["payment"]["created_at"])
-    expect(abs(ts_reset - datetime.now(timezone.utc)) < 300,
+    expect(abs(ts_reset - datetime.now(timezone.utc)) < timedelta(seconds=300),
            "omitted created_at uses reset time")
+    time.sleep(1.1)  # SA-9: the API payment must land in a later second
     after = ada.pay("bob", 50, key="post-seed")
     eq(after.status, 201, "API payment after seed")
     expect(parse_ts(after.json["created_at"]) > ts_reset,
@@ -249,13 +251,14 @@ def statement_visibility_own_only(ctx):
     ada, bob, cyd = hist_users(ctx)
     r = bob.pay("cyd", 250, visibility="public", key="pub-1")
     eq(r.status, 201, "public payment")
+    p4_id = r.json["payment_id"]
     sa = ada.statement()
     eq([e["payment"]["payment_id"] for e in sa["entries"]], ["p1", "p2", "p3"],
        "other users' public payment absent from ada's statement")
     sc = cyd.statement()
-    eq([e["payment"]["payment_id"] for e in sc["entries"]], ["p4"],
+    eq([e["payment"]["payment_id"] for e in sc["entries"]], [p4_id],
        "cyd sees the payment sent to them")
-    expect(any(p["payment_id"] == "p4" for p in ada.activity()),
+    expect(any(p["payment_id"] == p4_id for p in ada.activity()),
            "but the activity feed still shows the public payment (rules differ)")
 
 
@@ -297,8 +300,9 @@ def corrections_auth_and_lookup_errors(ctx):
             404, "not_found", "unknown payment beats the sender check too")
     # R63: a successful key claims reuse before any resource checks
     eq(ada.correct("p1", CORR_BODY, key="k6").status, 201, "successful correction")
-    err_is_(ada.correct("p_nope", {"expected_revision": 1}, key="k6"),
-            409, "idempotency_key_reuse", "different body reusing a successful key")
+    err_is_(ada.correct("p1", {"expected_revision": 1}, key="k6"),
+            409, "idempotency_key_reuse", "invalid body reusing a successful key "
+            "on the same path (R63; key scope is per-path, R58)")
 
 
 @test("corrections_body_validation", "R222 R223 R224 R225 R226 R227")
@@ -310,17 +314,28 @@ def corrections_body_validation(ctx):
         b = dict(base)
         b.pop(field)
         cases.append((f"missing {field}", b))
-    for v in (0, -1, "1", 1.5):
+    for v in (0, -1):
         cases.append((f"expected_revision={v!r}", dict(base, expected_revision=v)))
-    for v in (-1, 1000000001, "5", 1.5):
+    for v in (-1, 1000000001):
         cases.append((f"amount={v!r}", dict(base, amount=v)))
-    for v in ("", "x" * 201, 7):
+    for v in ("", "x" * 201):
         cases.append((f"reason={v!r}", dict(base, reason=v)))
-    for v in (S(-3600), S(60), "2026-09-24", "", "2026-09-24T13:20:00"):
+    for v in (S(-3600), "2026-09-24", "", "2026-09-24T13:20:00"):
         cases.append((f"effective_at={v!r}", dict(base, effective_at=v)))
     for i, (what, body) in enumerate(cases):
         err_is_(ada.correct("p1", body, key=f"bad-{i}"), 422, "validation_failed",
                 what)
+    # Wrong JSON *type*: adjudicated (stage-1 design §9 step 4) — every
+    # correction field has an endpoint-specific rule (R223-226), so a
+    # wrong-type value is always 422 validation_failed, never 400.
+    for i, (what, body) in enumerate([
+            ("expected_revision='1'", dict(base, expected_revision="1")),
+            ("expected_revision=1.5", dict(base, expected_revision=1.5)),
+            ("amount='5'", dict(base, amount="5")),
+            ("amount=1.5", dict(base, amount=1.5)),
+            ("reason=7", dict(base, reason=7))]):
+        err_is_(ada.correct("p1", body, key=f"badtype-{i}"), 422,
+                "validation_failed", what)
     ok = ada.correct("p1", {"expected_revision": 1, "amount": 1400,
                             "effective_at": S(5000), "reason": "x" * 200,
                             "junk_field": 1}, key="ok-bounds")
@@ -383,7 +398,8 @@ def correction_replay_reuse_exactly_once(ctx):
     eq(rp.json, first.json, "replay body identical (JSON value)")
     err_is_(ada.correct("p1", dict(CORR_BODY, amount=1300), key="k"),
             409, "idempotency_key_reuse", "different body, same key")
-    eq(ada.correct("p1", dict(CORR_BODY, reason="again"), key="k2").status, 201,
+    eq(ada.correct("p1", dict(CORR_BODY, expected_revision=2, amount=1100,
+                              reason="again"), key="k2").status, 201,
        "second correction (rev 3)")
     rp2 = ada.correct("p1", CORR_BODY, key="k")
     eq(rp2.status, 200, "replay still 200 after newer revisions (R232)")
@@ -457,6 +473,7 @@ def correction_moves_money_conserves(ctx):
     eq(ada.me()["total"], 9200, "...and credits the original receiver (ada +300)")
     eq(ada.me()["total"] + bob.me()["total"] + cyd.me()["total"], 15000,
        "conservation now (R240)")
+    time.sleep(1.1)  # SA-9
     for inst in (S(5500), S(5000), S(4500), S(4000), S(3500), S(3000), S(60)):
         tot = sum(u.me(f"as_of={inst}")["total"] for u in (ada, bob, cyd))
         eq(tot, 15000, f"conservation at as_of={inst} (R240)")
@@ -507,6 +524,7 @@ def correction_historical_overdraft(ctx):
                              "effective_at": S(4000), "reason": "small reduce"},
                       key="ho2")
     eq(ok.status, 201, "boundary stays >= 0 (450-400=50): accepted")
+    time.sleep(1.1)  # SA-9
     eq(carol.me(f"as_of={S(3000)}")["balance"], 50, "boundary value exact")
     # R238: all movements landing on one instant are combined at that boundary
     ctx.reset(fixture(
@@ -532,6 +550,7 @@ def correction_zero_amount_reversal(ctx):
     eq(r.json["amount"], 0, "revision amount 0")
     eq(ada.me()["total"], 10100, "ada refunded (10000 +300 -200)")
     eq(bob.me()["total"], 4900, "bob debited back")
+    time.sleep(1.1)  # SA-9
     st = ada.statement()
     e1 = st["entries"][0]
     eq(e1["payment"]["payment_id"], "p1", "still an entry")
@@ -570,25 +589,30 @@ def known_at_validation_and_echo(ctx):
 @test("known_at_selection_semantics", "R247 R248 R249 R254 R256")
 def known_at_selection_semantics(ctx):
     ada, bob, cyd = hist_users(ctx)
-    m = ada.me(f"known_at={S(4500)}")  # p1 recorded S(5000) <= ? no: p1 recorded_at S(5000) > S(4500)
-    eq(m["balance"], 10000, "known_at before p1's recording: p1 contributes nothing")
+    m = ada.me(f"known_at={S(4500)}")  # S(5000) < S(4500): p1 recorded before known_at
+    eq(m["balance"], 8500, "p1 known (rev1), p2/p3 not recorded yet")
     m = ada.me(f"known_at={S(3500)}")  # p1 (S(5000)) and p2 (S(4000)) known
     eq(m["balance"], 8800, "only revisions recorded at or before known_at count")
     eq(ada.me()["balance"], 8600, "omission means everything known now (R248)")
     r = ada.correct("p1", {"expected_revision": 1, "amount": 1200,
                            "effective_at": S(5000), "reason": "late fix"}, key="kn1")
     eq(r.status, 201, "correction recorded now")
-    eq(ada.me(f"known_at={S(4500)}")["balance"], 10000,
+    eq(ada.me(f"known_at={S(4500)}")["balance"], 8500,
        "known_at before the correction's recording still selects rev1")
-    eq(ada.me(f"known_at={S(-60)}")["balance"], 8300,
-       "known_at after recording selects rev2 (8600-300)")
-    eq(ada.me(f"known_at={S(-3600)}")["balance"], 8300,
+    eq(ada.me(f"known_at={S(-60)}")["balance"], 8900,
+       "known_at after recording selects rev2 (10000-1200+300-200; decrease "
+       "of a sent payment credits the sender)")
+    eq(ada.me(f"known_at={S(-3600)}")["balance"], 8900,
        "future known_at allowed (R251), sees rev2")
     st = ada.statement(f"known_at={S(4500)}")
-    eq([e["payment"]["payment_id"] for e in st["entries"]], [], "nothing selected yet")
+    eq([(e["payment"]["payment_id"], e["payment"]["amount"], e["revision"])
+        for e in st["entries"]], [("p1", 1500, 1)],
+       "only payments recorded at or before known_at appear (rev1); p2's "
+       "recording (S(4000)) is after known_at S(4500)")
     st = ada.statement(f"known_at={S(3500)}")
     eq([(e["payment"]["payment_id"], e["payment"]["amount"], e["revision"])
-        for e in st["entries"]], [("p1", 1500, 1)], "rev1 selected at that knowledge")
+        for e in st["entries"]], [("p1", 1500, 1), ("p2", 300, 1)],
+       "rev1 selected at that knowledge")
     st = ada.statement(f"known_at={S(-60)}")
     eq([e["payment"]["payment_id"] for e in st["entries"]], ["p1", "p2", "p3"],
        "effective_at unchanged -> original order")
@@ -619,7 +643,8 @@ def statement_known_at_window_and_combo(ctx):
     m = ada.me(f"as_of={S(5000)}&known_at={S(-60)}")
     eq(m["balance"], 8800, "as_of inclusive under known_at (R250)")
     m = ada.me(f"as_of={S(-3600)}&known_at={S(-3600)}")
-    eq(m["balance"], 8300, "future as_of and known_at both allowed (R251)")
+    eq(m["balance"], 8900, "future as_of and known_at both allowed (R251); "
+       "decrease of the sent p1 credits ada")
     st = ada.statement(f"known_at={S(-60)}")
     eq(sum(1 for e in st["entries"] if e["payment"]["payment_id"] == "p1"), 1,
        "exactly one entry for the corrected payment (R258)")
@@ -640,7 +665,7 @@ def snapshot_freeze_across_changes(ctx):
     eq(ada.correct("p1", {"expected_revision": 1, "amount": 1100,
                           "effective_at": S(5000), "reason": "post-snapshot"},
                    key="np2").status, 201, "correction after snapshot")
-    eq(ada.me()["total"], 8533, "live view moved (8600-400+333)")
+    eq(ada.me()["total"], 8667, "live view moved (8600+400-333)")
     frozen = ada.statement(f"snapshot={token}")
     eq([e["payment"]["payment_id"] for e in frozen["entries"]],
        [e["payment"]["payment_id"] for e in full["entries"]], "same entries as frozen")
@@ -681,35 +706,42 @@ def snapshot_param_rules(ctx):
     r = ctx.api.get(f"/statement?snapshot={token}&foo=bar", token=ada.token)
     eq(r.status, 200, "unrecognized query parameters ignored (R267)")
     ctx.reset(hist_fixture())
-    err_is_(ctx.api.get(f"/statement?snapshot={token}", token=ada.token),
-            404, "not_found", "token from before reset")
+    eq(ctx.api.get(f"/statement?snapshot={token}", token=ada.token).status, 401,
+       "the pre-reset bearer token is dead (reset clears credentials); auth "
+       "precedes resource lookup (stage-1 §7)")
+    ada2 = User_(ctx.api, "ada").login()
+    err_is_(ctx.api.get(f"/statement?snapshot={token}", token=ada2.token),
+            404, "not_found", "token from before reset, authenticated caller")
 
 
 @test("correction_moves_payment_across_window", "R268 R290")
 def correction_moves_payment_across_window(ctx):
     ada, bob, cyd = hist_users(ctx)
     st = ada.statement(f"from={S(4500)}&to={S(2500)}")
-    eq([e["payment"]["payment_id"] for e in st["entries"]], ["p1", "p2", "p3"], "window")
+    eq([e["payment"]["payment_id"] for e in st["entries"]], ["p2", "p3"],
+       "window: p1 (S(5000)) is before from=S(4500), excluded")
     token = st["snapshot"]
     r = ada.correct("p3", {"expected_revision": 1, "amount": 100,
                            "effective_at": S(1000), "reason": "moved out"}, key="mw1")
     eq(r.status, 201, "move p3 out of the window (and shrink it)")
+    time.sleep(1.1)  # SA-9: same-second writes may lag selection reads
     st2 = ada.statement(f"from={S(4500)}&to={S(2500)}")
-    eq([e["payment"]["payment_id"] for e in st2["entries"]], ["p1", "p2"],
+    eq([e["payment"]["payment_id"] for e in st2["entries"]], ["p2"],
        "p3 left the fresh window")
-    eq(st2["closing_balance"], 8800, "closing stable: the movement left too")
+    eq(st2["closing_balance"], 8800, "closing: opening 8500 + p2's 300 only")
     frozen = ada.statement(f"snapshot={token}")
-    eq([e["payment"]["payment_id"] for e in frozen["entries"]], ["p1", "p2", "p3"],
+    eq([e["payment"]["payment_id"] for e in frozen["entries"]], ["p2", "p3"],
        "existing snapshot unchanged (R290)")
     r = ada.correct("p3", {"expected_revision": 2, "amount": 100,
                            "effective_at": S(3000), "reason": "moved back"},
                     key="mw2")
     eq(r.status, 201, "move p3 back into the window")
+    time.sleep(1.1)  # SA-9
     st3 = ada.statement(f"from={S(4500)}&to={S(2500)}")
-    eq([e["payment"]["payment_id"] for e in st3["entries"]], ["p1", "p2", "p3"],
+    eq([e["payment"]["payment_id"] for e in st3["entries"]], ["p2", "p3"],
        "p3 is back in the fresh window")
     frozen = ada.statement(f"snapshot={token}")
-    eq([e["payment"]["payment_id"] for e in frozen["entries"]], ["p1", "p2", "p3"],
+    eq([e["payment"]["payment_id"] for e in frozen["entries"]], ["p2", "p3"],
        "snapshot still unchanged after competing corrections")
 
 
@@ -800,7 +832,8 @@ def downgrade(export, version, strip_auths=False):
             pay.pop("authorization_id", None)
     for pay in state.get("payments", []) or []:
         pay.pop("revisions", None)
-    for u in state.get("users", []) or []:
+    users = state.get("users") or {}
+    for u in (users.values() if isinstance(users, dict) else users):
         u.pop("base_balance", None)
     return st
 
@@ -888,6 +921,7 @@ def me_historical_holds_lifecycle(ctx):
     c_auth = auth.json["created_at"]
     eq(auth.json.get("closed_at", "missing"), None, "closed_at null while open (R282)")
     eq(ada.me(f"as_of={c_auth}")["held"], 500, "hold starts at creation (inclusive)")
+    time.sleep(1.1)  # SA-9: keep capture and creation events in distinct seconds
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "just before creation nothing is held (R277)")
     cap1 = bob.capture(aid, body={"amount": 200, "final": False}, key="h-c1")
@@ -898,8 +932,12 @@ def me_historical_holds_lifecycle(ctx):
        "just before the capture the full hold remains")
     eq(ada.me(f"as_of={c_auth}&known_at={iso(parse_ts(c2) - timedelta(seconds=1))}")["held"],
        500, "capture not yet known -> hold unreduced (R279)")
-    eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 300,
-       "known capture reduces the historical hold")
+    eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 500,
+       "capture known but as_of still before the event: the reduction happens "
+       "at capture time (R277); known_at only gates knowledge (R279)")
+    eq(ada.me(f"as_of={c2}&known_at={c_auth}")["held"], 500,
+       "regression probe: the capture already happened (as_of past the event) "
+       "but is not yet known at known_at=c_auth -> must not count (R279)")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "before the authorization existed: nothing held")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}"
@@ -908,6 +946,7 @@ def me_historical_holds_lifecycle(ctx):
     cap2 = bob.capture(aid, body={"amount": 300, "final": True}, key="h-c2")
     eq(cap2.status, 201, "final capture")
     c3 = cap2.json["created_at"]
+    time.sleep(1.1)  # SA-9
     m = ada.me(f"as_of={c3}")
     eq(m["held"], 0, "final capture releases the remainder at the event time")
     eq(m["balance"], m["total"], "balance == total (R276)")
@@ -1004,12 +1043,13 @@ def statement_only_money_movements(ctx):
     cap = bob.capture(aid, body={"amount": 200, "final": False}, key="s-c")
     eq(cap.status, 201, "nonfinal capture")
     eq(ada.void(aid).status, 200, "void the remainder")
+    time.sleep(1.1)  # SA-9
     eq(len(ada.statement()["entries"]), n0 + 1,
        "capture is the only new entry; release/void are not payments")
     entries = [e for e in ada.statement()["entries"]
                if e["payment"].get("authorization_id") == aid]
     eq(len(entries), 1, "capture appears exactly once (R289)")
-    eq(entries[0]["delta"], 200, "capture delta")
+    eq(entries[0]["delta"], -200, "capture delta (ada paid)")
     eq(bob.statement()["entries"][-1]["payment"]["authorization_id"], aid,
        "linked on the receiver's side too")
     eq(ada.me()["held"], 0, "void released the remaining hold")
@@ -1059,8 +1099,10 @@ def new_accounts_open_at_zero(ctx):
     eq(st["closing_balance"], 0, "statement closing 0")
     eq(st["entries"], [], "no entries")
     eq(zed.me(f"as_of={S(-3600)}")["balance"], 0, "any as_of reads zero")
-    r = zed.pay("ada", 25, key="z-first")
-    eq(r.status, 201, "first payment from a zero account")
+    ada = User_(ctx.api, "ada").login()
+    r = ada.pay(zed.handle, 25, key="z-first")
+    eq(r.status, 201, "first payment into the zero account")
+    time.sleep(1.1)  # SA-9
     eq(zed.statement()["opening_balance"], 0, "opening still zero after activity")
 
 
@@ -1080,17 +1122,19 @@ def historical_total_follows_revisions(ctx):
     r = rich.correct("g1", {"expected_revision": 1, "amount": 700,
                             "effective_at": S(5000), "reason": "up"}, key="t1")
     eq(r.status, 201, f"correction: {r}")
+    time.sleep(1.1)  # SA-9
     m = payer.me(f"as_of={S(60)}")
     eq(m["total"], 1600, "latest known revisions: 600->700 (+100)")
     eq(m["balance"], m["total"], "balance == total (R276)")
     eq(m["held"], 500, "hold unchanged by the correction")
     eq(m["available"], m["total"] - m["held"], "available == total - held (R276)")
-    m = payer.me(f"as_of={S(60)}&known_at={S(3600)}")
-    eq(m["total"], 1500, "known_at before the correction: total 1500 (R283)")
+    m = payer.me(f"as_of={S(60)}&known_at={S(1500)}")
+    eq(m["total"], 1500, "known_at after both original recordings but before the "
+       "correction's: rev1 total 1500 (R283)")
     eq(m["held"], 500, "historical held")
     m = payer.me(f"as_of={S(4500)}&known_at={S(-60)}")
     eq(m["total"], 700, "as_of between g1 and the hold: only the revised g1")
-    eq(payer.me(f"as_of={S(4500)}")["held"], 500, "hold active at that as_of")
+    eq(payer.me(f"as_of={S(3900)}")["held"], 500, "hold active just after creation")
 
 
 # ------------------------------------------------------------- carried invariants
@@ -1110,8 +1154,9 @@ def storm_stage3_invariants(ctx):
     statuses, five_xx, corr_attempts = [], [], []
 
     def note(r):
-        statuses.append(r.status)
-        if r.status >= 500:
+        status = r.status if hasattr(r, "status") else 200
+        statuses.append(status)
+        if status >= 500:
             five_xx.append(repr(r)[:200])
         return r
 
@@ -1128,11 +1173,13 @@ def storm_stage3_invariants(ctx):
                                key=f"storm-cap-{i}"))
             return a
         if kind == 4:
-            return note(u.me(f"as_of={S(3900)}&known_at={S(60)}"))
+            return note(u.api.get(f"/me?as_of={S(3900)}&known_at={S(60)}",
+                                  token=u.token))
         if kind == 5:
-            return note(u.statement("limit=3"))
+            return note(u.api.get("/statement?limit=3", token=u.token))
         if kind == 6:
-            return note(u.statement(f"snapshot={token}&limit=2&offset={i % 4}"))
+            return note(u.api.get(f"/statement?snapshot={token}&limit=2&offset={i % 4}",
+                                  token=u.token))
         if kind == 7:
             # same-revision correction races on the seeded payments; the sender
             # is always ada. Only one attempt per payment can win (R269).
@@ -1144,13 +1191,14 @@ def storm_stage3_invariants(ctx):
             corr_attempts.append((tgt, body, f"storm-corr-{n}", r.status))
             return r
         if kind == 8:
-            return note(u.me())
+            return note(u.api.get("/me", token=u.token))
         return note(u.settle([{"from_handle": "dee", "to_handle": "cyd",
                                "amount": 5}], key=f"storm-set-{i}"))
 
     results, errs = parallel(50, op, pool=50)
     expect(not errs, f"client-side errors: {errs[:2]}")
     eq(five_xx, [], "no 5xx under 50 concurrent requests (R45)")
+    time.sleep(1.2)  # SA-9
     # conservation now and at historical instants (R240)
     for inst in (S(5000), S(4000), S(3000), S(60)):
         tot = sum(u.me(f"as_of={inst}")["total"] for u in users)
