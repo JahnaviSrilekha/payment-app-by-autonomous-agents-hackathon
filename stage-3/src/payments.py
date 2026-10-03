@@ -5,6 +5,7 @@ idempotency-key resolution (server.run_idempotent for POST /payments).
 
 import errors
 import ids
+import ledger
 import state as state_mod
 
 
@@ -48,6 +49,10 @@ def append_payment(service, from_user_id, to_user_id, amount, note, visibility,
         "request_id": request_id,
         "authorization_id": authorization_id,
         "settlement_id": settlement_id,
+        # R214: every payment has a revision history; revision 1 is the original
+        # amount with effective_at = recorded_at = created_at (R271: for a settlement
+        # member created_at is the settlement's committed_at, carried on both axes).
+        "revisions": [ledger.initial_revision(amount, created_at)],
         "created_at": created_at,
         "seq": state_mod.next_seq(service),
     }
