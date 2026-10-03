@@ -24,6 +24,7 @@ import requests as requests_endpoints
 import settlements
 import splits
 import state as state_mod
+import statements
 import ui
 import testctl
 
@@ -249,6 +250,7 @@ def ep_me(ctx, user, service):
 
 route("POST", r"/payments", idempotent=True)(payments.create_payment)
 route("GET", r"/activity")(payments.activity)
+route("GET", r"/statement")(statements.statement)
 route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
 route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
 route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
