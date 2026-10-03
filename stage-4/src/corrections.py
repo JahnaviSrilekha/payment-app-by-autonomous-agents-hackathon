@@ -32,7 +32,8 @@ REASON_MAX = 200
 
 
 def correction_response(payment, revision):
-    """R229's success shape."""
+    """R229's success shape, extended with R325's correction_batch_id (a single
+    correction's revision carries none, so null)."""
     return {
         "payment_id": payment["id"],
         "revision": revision["revision"],
@@ -40,17 +41,21 @@ def correction_response(payment, revision):
         "effective_at": revision["effective_at"],
         "recorded_at": revision["recorded_at"],
         "reason": revision["reason"],
+        "correction_batch_id": revision.get("correction_batch_id"),
     }
 
 
 def revision_entry(revision):
-    """R243's per-revision shape (design section 17's Revision model)."""
+    """R243's per-revision shape (design section 17's Revision model), extended with
+    R325's correction_batch_id (null for single corrections and revision 1, the
+    batch's id for batch-created revisions)."""
     return {
         "revision": revision["revision"],
         "amount": revision["amount"],
         "effective_at": revision["effective_at"],
         "recorded_at": revision["recorded_at"],
         "reason": revision["reason"],
+        "correction_batch_id": revision.get("correction_batch_id"),
     }
 
 

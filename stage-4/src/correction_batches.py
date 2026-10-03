@@ -113,12 +113,11 @@ def create_correction_batch(ctx, user, service):
         service["users"][payment["from_user_id"]]["balance"] -= delta
         service["users"][payment["to_user_id"]]["balance"] += delta
     # R324/R325: 201 with the batch id, the shared recorded_at and every new
-    # revision in input order, each entry exposing correction_batch_id.
+    # revision in input order, each entry exposing correction_batch_id (read from
+    # the revision by the shared correction_response).
     entries = []
     for payment, tentative, _ in tentatives:
-        entry = corrections_mod.correction_response(payment, tentative)
-        entry["correction_batch_id"] = batch_id
-        entries.append(entry)
+        entries.append(corrections_mod.correction_response(payment, tentative))
     return 201, {
         "correction_batch_id": batch_id,
         "recorded_at": recorded_at,

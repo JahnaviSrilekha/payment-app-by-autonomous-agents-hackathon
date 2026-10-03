@@ -379,7 +379,8 @@ class TestT33CorrectionBatches(unittest.TestCase):
         self.assertEqual(entry["amount"], single_response["amount"])
         self.assertEqual(entry["effective_at"], single_response["effective_at"])
         self.assertEqual(entry["reason"], single_response["reason"])
-        self.assertNotIn("correction_batch_id", single_response)
+        # R325's AC: a single correction exposes correction_batch_id: null
+        self.assertIsNone(single_response["correction_batch_id"])
 
     def test_rejected_batch_leaves_no_state(self):
         """R323: a rejected batch leaves history, balances and idempotency records
@@ -393,6 +394,38 @@ class TestT33CorrectionBatches(unittest.TestCase):
         status, payload, _ = batch(self.client, self.ada, [item("p_1", 6100)],
                                    key="b-retry")
         self.assertEqual(status, 201, payload)
+
+
+def test_batch_id_exposed_through_revisions_and_single_correction(self):
+        """R325's AC (regression for the reviewer's reject): every revision exposes
+        correction_batch_id — null on revision 1 and on single-correction-created
+        revisions (both in the single endpoint's 201 response and through
+        GET /payments/{id}/revisions), the batch's own id on batch-created ones."""
+        util.reset(self.client, batch_fixture())
+        self.ada = login(self.client, "ada@example.com")
+        # a single correction first: null everywhere it is exposed
+        _, single, _ = self.client.request(
+            "POST", "/payments/p_1/corrections",
+            {"expected_revision": 1, "amount": 6100, "reason": "single",
+             "effective_at": T2}, token=self.ada, key="c-exp")
+        self.assertIsNone(single["correction_batch_id"])
+        rows = self.client.request("GET", "/payments/p_1/revisions",
+                                   token=self.ada)[1]["revisions"]
+        self.assertTrue(all(r["correction_batch_id"] is None for r in rows))
+        # then a batch correction of the same payment: the batch id everywhere
+        _, batch_response, _ = batch(self.client, self.ada,
+                                     [item("p_1", 6200, expected_revision=2)],
+                                     key="b-exp")
+        batch_id = batch_response["correction_batch_id"]
+        self.assertEqual(batch_response["revisions"][0]["correction_batch_id"],
+                         batch_id)
+        rows = self.client.request("GET", "/payments/p_1/revisions",
+                                   token=self.ada)[1]["revisions"]
+        self.assertEqual([r["revision"] for r in rows], [1, 2, 3])
+        self.assertIsNone(rows[0]["correction_batch_id"])
+        self.assertIsNone(rows[1]["correction_batch_id"])
+        self.assertEqual(rows[2]["correction_batch_id"], batch_id)
+        self.assertEqual(rows[2]["recorded_at"], batch_response["recorded_at"])
 
 
 if __name__ == "__main__":

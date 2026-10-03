@@ -268,7 +268,7 @@ class TestT28Corrections(unittest.TestCase):
         self.assertEqual(payload, {"payment_id": "p_1", "revision": 2,
                                    "amount": 6400, "effective_at": T1,
                                    "recorded_at": payload["recorded_at"],
-                                   "reason": "tip"})
+                                   "reason": "tip", "correction_batch_id": None})
         me_ada = self.client.request("GET", "/me", token=self.ada)[1]
         me_bob = self.client.request("GET", "/me", token=self.bob)[1]
         # live balances moved by the +400 delta only (R234)
