@@ -7,6 +7,7 @@ import copy
 
 import errors
 import idempotency
+import ledger
 import state as state_mod
 from auth import hash_password
 
@@ -51,6 +52,11 @@ def build_from_fixture(fixture):
 
     service = state_mod.new_service(currency, minor_units)
     service["authorization_ttl_seconds"] = ttl
+
+    # One reset instant for the whole fixture (R195: omissions use reset time, before
+    # subsequent API-created payments; A16: the clock is read once per reset).
+    now = state_mod.now_utc()
+    reset_time = state_mod.now_rfc3339()
 
     for user in users:
         if not isinstance(user, dict):
@@ -112,6 +118,20 @@ def build_from_fixture(fixture):
             raise errors.validation_failed("visibility must be public or private")
         if any(p["id"] == payment_id for p in service["payments"]):
             raise errors.validation_failed("duplicate payment id %s" % payment_id)
+        settlement_id = payment.get("settlement_id")
+        if settlement_id is not None and not isinstance(settlement_id, str):
+            raise errors.validation_failed("settlement_id must be a string")
+        # R195: a seeded payment may supply created_at; omission uses the reset time.
+        # R193: it must be an RFC 3339 instant with an offset; R196: a future one is
+        # 422 with no state change (this builder is pure, so nothing has changed).
+        created_at = payment.get("created_at", reset_time)
+        try:
+            created_parsed = state_mod.parse_rfc3339(created_at)
+        except ValueError:
+            raise errors.validation_failed(
+                "payment created_at must be an RFC 3339 timestamp")
+        if created_parsed > now:
+            raise errors.validation_failed("payment created_at must not be in the future")
         service["payments"].append({
             "id": payment_id,
             "from_user_id": from_user_id,
@@ -121,11 +141,48 @@ def build_from_fixture(fixture):
             "note": note,
             "visibility": visibility,
             "request_id": payment.get("request_id"),
-            "settlement_id": None,
+            "settlement_id": settlement_id,
             "authorization_id": None,  # seeded payments are stage-1-shaped (R167)
-            "created_at": state_mod.now_rfc3339(),
+            # R215: the supplied created_at is also the original recorded/effective
+            # time — revision 1 (R214), stored verbatim so it is echoed back exactly.
+            "revisions": [ledger.initial_revision(amount, created_at)],
+            "created_at": created_at,
             "seq": state_mod.next_seq(service),
         })
+
+    # R216: base_balance is the seeded ending balance minus the net effect of the
+    # original seeded payments — the opening balance. Computed once here, never
+    # written again outside reset/import (design section 17), so corrections can
+    # never change it.
+    for user_id, user in service["users"].items():
+        net = 0
+        for p in service["payments"]:
+            if p["to_user_id"] == user_id:
+                net += p["amount"]
+            elif p["from_user_id"] == user_id:
+                net -= p["amount"]
+        user["base_balance"] = user["balance"] - net
+
+    # R218 (same atomic reset pass as R196): the seeded history must be consistent
+    # and nonnegative — replaying the original payments in effective-time order from
+    # their opening balances must keep every balance >= 0 throughout, so the fixture
+    # never asserts a balance that the money movement could not have produced.
+    running = {user_id: user["base_balance"] for user_id, user in service["users"].items()}
+    # The opening balance is iteration 0 of the replay: a negative one asserts an
+    # impossible "before anything moved" state even if every payment is affordable.
+    for user_id, opening in running.items():
+        if opening < 0:
+            raise errors.validation_failed(
+                "seeded payment history would overdraw user %s before any payment"
+                % user_id)
+    ordered = sorted(service["payments"],
+                     key=lambda p: (state_mod.parse_rfc3339(p["created_at"]), p["id"]))
+    for p in ordered:
+        running[p["from_user_id"]] -= p["amount"]
+        running[p["to_user_id"]] += p["amount"]
+        if running[p["from_user_id"]] < 0 or running[p["to_user_id"]] < 0:
+            raise errors.validation_failed(
+                "seeded payment history would overdraw user %s" % p["from_user_id"])
 
     for request in request_list:
         if not isinstance(request, dict):
@@ -162,10 +219,6 @@ def build_from_fixture(fixture):
         }
         service["request_order"].append(request_id)
 
-    # R286: seeded open holds are assumed created at reset unless created_at is
-    # supplied; the reset clock is read once for the whole fixture.
-    now = state_mod.now_utc()
-    reset_time = state_mod.now_rfc3339()
     for authorization in authorization_list:
         if not isinstance(authorization, dict):
             raise errors.malformed_request("each authorization must be an object")
