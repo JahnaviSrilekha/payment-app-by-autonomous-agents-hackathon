@@ -13,6 +13,7 @@ captures appearing exactly once as ordinary payments).
 from datetime import datetime, timezone
 
 import errors
+import ids
 import ledger
 import payments
 import state as state_mod
@@ -80,19 +81,60 @@ def build_statement(service, user, from_instant, to_instant, known_at):
 
 def statement(ctx, user, service):
     """GET /statement. The clock is read once at the start of the request (A16):
-    the default `to` (R205) and the default known_at (R248, batch 3) are the same
-    request-start instant, so every money field in one response is consistent."""
+    the default `to` (R205) and the default known_at (R248) are the same
+    request-start instant, so every money field in one response is consistent.
+
+    A call not given a `snapshot` computes the full window fresh and freezes it
+    under a new opaque token (R260-R261, A19); a call given one pages the stored
+    result — only limit/offset may accompany it (R263, checked before the token is
+    resolved, A15) — so later payments, corrections and lifecycle actions can never
+    change a snapshotted answer (R262, R266, R268, R290)."""
+    now = state_mod.now_utc()
+    if "snapshot" in ctx.query:
+        # R263 (A15): query-combination validation before token resolution (404).
+        for name in ("from", "to", "known_at"):
+            if ctx.query.get(name):
+                raise errors.validation_failed(
+                    "%s may not accompany a snapshot" % name)
+        record = service["statement_snapshots"].get(ctx.query["snapshot"][0])
+        if record is None or record["user_id"] != user["id"]:
+            # R264: unknown, another user's, or a pre-reset token — indistinguishable.
+            raise errors.not_found("no such statement snapshot")
+        limit = state_mod.parse_limit(ctx.query)
+        offset = state_mod.parse_offset(ctx.query)
+        entries = record["entries"]
+        return 200, {
+            "opening_balance": record["opening_balance"],
+            "entries": entries[offset:offset + limit],
+            "closing_balance": record["closing_balance"],
+            "has_more": offset + limit < len(entries),
+        }
     from_instant = _instant(ctx.query, "from")
     to_instant = _instant(ctx.query, "to")
+    known_at = _instant(ctx.query, "known_at")
     if to_instant is None:
-        to_instant = state_mod.now_utc()
+        to_instant = now
+    if known_at is None:
+        known_at = now  # R248: everything known when the read begins
     limit = state_mod.parse_limit(ctx.query)
     offset = state_mod.parse_offset(ctx.query)
     entries, opening, closing = build_statement(service, user, from_instant,
-                                                to_instant, None)
+                                                to_instant, known_at)
+    token = ids.new_id("snap")  # A19: opaque, server-generated (ADR-003 scheme)
+    # R261: the snapshot freezes selected revisions, window, balances and entries.
+    service["statement_snapshots"][token] = {
+        "user_id": user["id"],
+        "entries": entries,
+        "opening_balance": opening,
+        "closing_balance": closing,
+        "from_used": from_instant,
+        "to_used": to_instant,
+        "known_at_used": known_at,
+    }
     return 200, {
         "opening_balance": opening,
         "entries": entries[offset:offset + limit],
         "closing_balance": closing,
         "has_more": len(entries) > offset + limit,
+        "snapshot": token,
     }
