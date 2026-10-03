@@ -1737,7 +1737,7 @@ def batch_per_item_errors_input_order(ctx):
         err_is_(ada.cbatch(items, key=f"pe-{i}"), status, code, what)
     # nothing was applied by any rejected batch
     eq(len(ada.revisions("p1").json["revisions"]), 1, "p1 untouched (R323)")
-    eq(len(ada.revisions("p2").json["revisions"]), 1, "p2 untouched (R323)")
+    eq(len(bob.revisions("p2").json["revisions"]), 1, "p2 untouched (R323)")
     # a batch item may correct a settlement member (R315), unlike the single path
     s = ada.settle([{"from_handle": "ada", "to_handle": "cyd", "amount": 100}],
                    key="set1")
@@ -1817,7 +1817,7 @@ def batch_settlement_completeness_and_instants(ctx):
     eq(ada.cbatch([{"payment_id": "p1", "expected_revision": 1, "amount": 1900,
                     "effective_at": S(4000), "reason": "nonmember"}],
                   key="inc8").status, 201, "nonmember batch correction (R318)")
-    eq(ada.correct("p2", {"expected_revision": 1, "amount": 450,
+    eq(bob.correct("p2", {"expected_revision": 1, "amount": 450,
                           "effective_at": S(3000), "reason": "nonmember"},
                     key="inc9").status, 201, "ordinary single correction (R318)")
 
@@ -1868,20 +1868,21 @@ def combo_fixture():
 def batch_combined_affordability(ctx):
     # cyd has 350 with a 250 hold: available 100 (R303). Each leg alone is
     # affordable, the combined net is not (R322), and vice versa via netting.
+    # Each single-leg probe gets its own reset so no leg inherits the previous
+    # leg's committed debit.
     legs = [
         {"payment_id": "p3", "expected_revision": 1, "amount": 380,
          "effective_at": S(2000), "reason": "-80 each"},
         {"payment_id": "p4", "expected_revision": 1, "amount": 130,
          "effective_at": S(1500), "reason": "-80 each"},
     ]
-    # reset A: prove each leg alone is affordable
-    ctx.reset(combo_fixture())
-    ada = User_(ctx.api, "ada").login()
-    cyd = User_(ctx.api, "cyd").login()
-    eq(cyd.authorize("ada", 250, key="h").status, 201, "hold set: available 100")
     for i, leg in enumerate(legs):
+        ctx.reset(combo_fixture())
+        ada = User_(ctx.api, "ada").login()
+        cyd = User_(ctx.api, "cyd").login()
+        eq(cyd.authorize("ada", 250, key="h").status, 201, "hold set: available 100")
         eq(ada.cbatch([leg], key=f"single-{i}").status, 201,
-           f"leg {i} alone is affordable (R322)")
+           f"leg {i} alone is affordable from the untouched wallet (R322)")
     # reset B: the two legs together overdraft cyd's available
     ctx.reset(combo_fixture())
     ada = User_(ctx.api, "ada").login()
@@ -1909,14 +1910,18 @@ def batch_combined_affordability(ctx):
 
 
 def ho_fixture():
+    """carol's wallet: opening 0; +h1 +h2 (correctable inflows), -h3, +h4
+    (a later inflow) — so the [S(3000), S(1000)) boundary sits between h3 and
+    h4 and can go negative while carol's CURRENT wallet stays affordable."""
     return fixture(
-        [fx_user("u_ada", "ada", 100), fx_user("u_carol", "carol", 200),
-         fx_user("u_dave", "dave", 500), fx_user("u_erin", "erin", 800),
+        [fx_user("u_ada", "ada", 100), fx_user("u_carol", "carol", 250),
+         fx_user("u_dave", "dave", 500), fx_user("u_erin", "erin", 750),
          fx_user("u_frank", "frank", 500)],
         operators=["u_ada"],
         payments=[fx_pay("h1", "u_dave", "u_carol", 500, created_at=S(4000)),
                   fx_pay("h2", "u_frank", "u_carol", 500, created_at=S(3900)),
-                  fx_pay("h3", "u_carol", "u_erin", 800, created_at=S(3000))])
+                  fx_pay("h3", "u_carol", "u_erin", 800, created_at=S(3000)),
+                  fx_pay("h4", "u_erin", "u_carol", 50, created_at=S(1000))])
 
 
 @test("batch_historical_overdraft_all_or_nothing", "R320 R321 R323 R237")
@@ -1924,17 +1929,17 @@ def batch_historical_overdraft_all_or_nothing(ctx):
     ctx.reset(ho_fixture())
     ada = User_(ctx.api, "ada").login()  # operator
     carol = User_(ctx.api, "carol").login()
-    dave = User_(ctx.api, "dave").login()
     r1 = {"payment_id": "h1", "expected_revision": 1, "amount": 450,
           "effective_at": S(4000), "reason": "reduce a little"}
-    r2 = {"payment_id": "h2", "expected_revision": 1, "amount": 350,
+    r2 = {"payment_id": "h2", "expected_revision": 1, "amount": 310,
           "effective_at": S(3900), "reason": "reduce a little"}
-    # each alone is fine; combined carol goes to -50 at h3's boundary (R320/R322)
+    # each alone is fine; combined, carol's mid boundary goes to 450+310-800
+    # = -40 while her current wallet only drops to 10 (phase 5 passes) (R320)
     eq(ada.cbatch([r1], key="ho-a").status, 201,
-       "item 1 alone: boundary 450+500-800 = 150")
+       "item 1 alone: boundaries 450/950/150/200 all >= 0")
     time.sleep(1.1)  # SA-9
     eq(ada.cbatch([r2], key="ho-b").status, 201,
-       "item 2 alone: boundary 500+350-800 = 50")
+       "item 2 alone: boundaries 500/810/10/60 all >= 0")
     time.sleep(1.1)
     # fresh history for the combined rejection
     ctx.reset(ho_fixture())
@@ -1944,7 +1949,7 @@ def batch_historical_overdraft_all_or_nothing(ctx):
     before = [carol.me()["total"], dave.me()["total"]]
     err_is_(ada.cbatch([dict(r1), dict(r2)], key="ho-both"), 409,
             "historical_overdraft",
-            "combined boundary 450+350-800 = -50 (R320 final phase)")
+            "combined boundary 450+310-800 = -40 (R320 final phase)")
     eq([carol.me()["total"], dave.me()["total"]], before,
        "all-or-nothing: balances unchanged (R323)")
     ex = ctx.export()
@@ -1963,8 +1968,8 @@ def batch_historical_overdraft_all_or_nothing(ctx):
               {"payment_id": "h3", "expected_revision": 1, "amount": 1700,
                "effective_at": S(3000), "reason": "fee up"}]
     err_is_(ada.cbatch(triple, key="ho-ih"), 409, "insufficient_funds",
-            "combined available shortfall (-1100) precedes the historical sweep (R320)")
-    eq(carol.me()["total"], 200, "nothing applied (R323)")
+            "combined available shortfall (-1140) precedes the historical sweep (R320)")
+    eq(carol.me()["total"], 250, "nothing applied (R323)")
 
 
 @test("batch_success_shape_shared_recorded_at", "R324 R325 R326 A27")
@@ -2006,10 +2011,13 @@ def batch_success_shape_shared_recorded_at(ctx):
         eq(revs[-1]["recorded_at"], body["recorded_at"], f"{pid}: shared recorded_at")
         eq(revs[0]["correction_batch_id"], None, "revision 1 untagged")
     # a single correction exposes correction_batch_id null (R325 AC)
-    solo = ada.correct("p2", {"expected_revision": 1, "amount": 450,
+    solo = bob.correct("p2", {"expected_revision": 1, "amount": 450,
                               "effective_at": S(3000), "reason": "solo"}, key="s1")
     eq(solo.status, 201, "single correction")
-    eq(solo.json.get("correction_batch_id"), None,
+    expect("correction_batch_id" in solo.json,
+           "single-correction response must expose the key (R325 AC): "
+           f"{sorted(solo.json)}")
+    eq(solo.json["correction_batch_id"], None,
        "single-correction revision has correction_batch_id null (R325 AC)")
     # A27: a batch immediately after is still strictly later (same-second bump)
     b2 = ada.cbatch([{"payment_id": "p2", "expected_revision": 2, "amount": 440,
@@ -2032,9 +2040,9 @@ def batch_replay_and_rejection_idempotency(ctx):
     eq(rp.status, 200, "replay is 200 (R330)")
     eq(rp.json, first.json, "replay returns the original batch response (R330)")
     time.sleep(1.1)  # SA-9
-    eq(ada.correct("p2", {"expected_revision": 2, "amount": 400,
+    eq(bob.correct("p2", {"expected_revision": 2, "amount": 400,
                           "effective_at": S(3000), "reason": "later"}, key="solo")
-       .status, 201, "a later correction happens")
+       .status, 201, "a later correction happens (bob is p2's sender)")
     rp2 = ada.cbatch(items, key="k")
     eq(rp2.status, 200, "replay after later mutations still 200 (R330)")
     eq(rp2.json, first.json, "original body, not the new state (R330)")
@@ -2045,7 +2053,7 @@ def batch_replay_and_rejection_idempotency(ctx):
     err_is_(ada.cbatch(bad, key="k2"), 404, "not_found", "rejected batch")
     err_is_(ada.cbatch(bad, key="k2"), 404, "not_found",
             "same rejected body replays nothing: same error again")
-    good = [dict(items[0], amount=410)]
+    good = [dict(items[0], expected_revision=3, amount=410)]
     eq(ada.cbatch(good, key="k2").status, 201,
        "key free after the rejection (R323)")
 
@@ -2064,6 +2072,7 @@ def originals_unchanged_after_refund_and_batch(ctx):
     stmt_before = ada.statement()
     token = stmt_before["snapshot"]
     feed_before = {p["payment_id"]: p for p in ada.activity()}
+    bob_feed_before = {p["payment_id"]: p for p in bob.activity()}
     rev1_before = ada.revisions("p1").json["revisions"][0]
     # mutate: refund + batch
     eq(bob.refund("p1", {"amount": 300}, key="r1").status, 201, "refund")
@@ -2080,12 +2089,16 @@ def originals_unchanged_after_refund_and_batch(ctx):
                     key="setA")
     eq(rs.status, 200, "settlement retry is 200")
     eq(rs.json, settle_body, "settlement retry body unchanged (R328)")
-    # activity entries for the original payments byte-identical (R292/R327)
+    # activity entries for the original payments byte-identical (R292/R327),
+    # read from each payment's own party's feed
     feed_after = {p["payment_id"]: p for p in ada.activity()}
-    for pid in ("p1", "p2", "p3", pay_body["payment_id"],
-                settle_body["payments"][0]["payment_id"]):
+    bob_feed_after = {p["payment_id"]: p for p in bob.activity()}
+    for pid in ("p1", "p3", settle_body["payments"][0]["payment_id"]):
         eq(feed_after.get(pid), feed_before.get(pid),
-           f"activity entry for {pid} unchanged (R292/R327)")
+           f"activity entry for {pid} unchanged in ada's feed (R292/R327)")
+    for pid in ("p2", pay_body["payment_id"]):
+        eq(bob_feed_after.get(pid), bob_feed_before.get(pid),
+           f"activity entry for {pid} unchanged in bob's feed (R292/R327)")
     # revision 1 of p1 unchanged (R327)
     eq(ada.revisions("p1").json["revisions"][0], rev1_before,
        "revision 1 untouched by refund and batch (R327)")
@@ -2095,11 +2108,14 @@ def originals_unchanged_after_refund_and_batch(ctx):
        "pre-mutation snapshot entries unchanged (R292/R329)")
     eq(frozen["closing_balance"], stmt_before["closing_balance"],
        "pre-mutation snapshot closing unchanged (R292)")
-    # new statements reflect the new revisions (R329)
+    # new statements reflect the new revisions (R329), own-payments-only (R213)
     st = ada.statement()
     by_pid = {e["payment"]["payment_id"]: e for e in st["entries"]}
-    eq(by_pid["p2"]["payment"]["amount"], 450, "new statement shows the revision (R329)")
-    eq(by_pid["p3"]["payment"]["amount"], 250, "new statement shows the revision (R329)")
+    bob_by_pid = {e["payment"]["payment_id"]: e for e in bob.statement()["entries"]}
+    eq(bob_by_pid["p2"]["payment"]["amount"], 450,
+       "bob's statement shows the p2 revision (R329)")
+    eq(by_pid["p3"]["payment"]["amount"], 250,
+       "ada's statement shows the p3 revision (R329)")
 
 
 @test("export_import_v4_roundtrip", "R334 A28 design-29")
@@ -2126,23 +2142,25 @@ def export_import_v4_roundtrip(ctx):
     ada2 = User_(ctx.api, "ada").login()
     bob2 = User_(ctx.api, "bob").login()
     eq(bob2.me()["total"], 3050, "balances preserved")
-    eq(len(ada2.revisions("p2").json["revisions"]), 2, "correction history preserved")
-    eq(ada2.revisions("p2").json["revisions"][-1]["correction_batch_id"], cbid,
+    eq(len(bob2.revisions("p2").json["revisions"]), 2, "correction history preserved")
+    eq(bob2.revisions("p2").json["revisions"][-1]["correction_batch_id"], cbid,
        "correction_batch_id preserved (A28)")
     rpid = next(p["id"] for p in ex["state"]["payments"] if p.get("refund_of"))
     err_is_(ada2.refund(rpid, {"amount": 10}, key="post"),
             422, "invalid_refund_target",
             "ada2 is the refund's receiver: refund_of semantics survive (R334)")
-    err_is_(ada2.correct(rpid, {"expected_revision": 1, "amount": 10,
+    err_is_(bob2.correct(rpid, {"expected_revision": 1, "amount": 10,
                                 "effective_at": S(60), "reason": "x"}, key="post2"),
-            422, "linked_payment_immutable", "refund still immutable after import")
+            422, "linked_payment_immutable",
+            "refund still immutable after import (bob2 is its sender)")
     # v1/v2/v3 payloads import with null defaults (A28)
     for version in (1, 2, 3):
         ctx.reset(fixture([fx_user("u_zed", "zed", 1)]))
         ctx.import_state(downgrade(ex, version, strip_auths=(version == 1)))
         ada_v = User_(ctx.api, "ada").login()
+        bob_v = User_(ctx.api, "bob").login()
         eq(ada_v.me()["total"], 8750, f"v{version} import: balance preserved")
-        revs = ada_v.revisions("p2").json["revisions"]
+        revs = bob_v.revisions("p2").json["revisions"]
         expect(all(r.get("correction_batch_id") is None for r in revs),
                f"v{version}: correction_batch_id defaults to null (A28)")
         eq(stored_payment(ctx, "p1").get("refund_of"), None,
