@@ -118,4 +118,6 @@ instants SA-10). Stage 4 adds:
 - **SA-16.** Import validation of `refund_of` (must name another payment
   present in the export; self-reference rejected) and
   `correction_batch_id` (string or null) comes from design §29 and is tagged
-  `design-29` in coverage, not to a requirement id.
+  `design-29` in coverage, not to a requirement id. A28 (as amended in
+  61913fea) now explicitly names these consequences and the no-import-on-422
+  behavior, which the suite asserts.

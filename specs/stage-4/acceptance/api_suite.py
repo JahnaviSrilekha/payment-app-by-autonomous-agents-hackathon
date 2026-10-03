@@ -2168,6 +2168,8 @@ def export_import_v4_roundtrip(ctx):
             break
     err_is_(ctx.api.post("/_test/import", body=badtype, timeout=15), 422,
             "validation_failed", "correction_batch_id must be string or null (design-29)")
+    zed = User_(ctx.api, "zed").login()
+    eq(zed.me()["total"], 1, "every failed import leaves the existing state untouched (A28)")
 
 
 @test("concurrent_shared_revision_at_most_one", "R333")
