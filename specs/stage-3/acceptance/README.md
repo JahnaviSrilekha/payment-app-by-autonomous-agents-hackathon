@@ -118,3 +118,9 @@ earlier stages. `COVERAGE.md` is the committed requirement-id → test table.
   second; the same-second behavior itself is reported to @reviewer for
   adjudication (candidate R248 divergence, plus the R279 capture-known
   inversion which the suite asserts spec-correctly and currently fails on).
+- **SA-10.** Every instant that must be in the future at run time (future
+  `as_of`/`known_at` probes, the R226 future-`effective_at` rejection case,
+  the future seeded `created_at` reset case) is computed fresh at call time
+  via `future(seconds)` — module-load-based values went stale on runs longer
+  than their lead, making the server correctly accept what the suite wrongly
+  expected to be rejected.
