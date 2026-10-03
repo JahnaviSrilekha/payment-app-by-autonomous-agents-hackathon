@@ -11,7 +11,7 @@ import re
 import sys
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,6 +24,7 @@ import requests as requests_endpoints
 import settlements
 import splits
 import state as state_mod
+import ui
 import testctl
 
 DEFAULT_PORT = 8080
@@ -47,11 +48,13 @@ class Ctx:
 
 class Raw:
     """A non-JSON response body (e.g. the static CSS/JS of the UI, design.md section
-    14). Handlers return (status, Raw(content_type, bytes))."""
+    14), optionally with extra headers (Location, Set-Cookie). Handlers return
+    (status, Raw(content_type, bytes))."""
 
-    def __init__(self, content_type, body):
+    def __init__(self, content_type, body, extra_headers=None):
         self.content_type = content_type
         self.body = body
+        self.extra_headers = extra_headers or []
 
 
 class Route:
@@ -97,6 +100,24 @@ def ep_health(ctx):
     return 200, {"status": "ok"}
 
 
+class _FormRedisplay(Exception):
+    """A form-flow failure that re-renders the page HTML with the error and the
+    typed values, instead of the JSON error envelope."""
+
+    def __init__(self, status, html_text):
+        super().__init__("form redisplay")
+        self.status = status
+        self.html_text = html_text
+
+
+def err_message_from(ctx):
+    return (ctx.query.get("auth_error") or [""])[0]
+
+
+def _session_cookie(token):
+    return "pebble_token=%s; Path=/; Max-Age=86400; SameSite=Lax" % quote(token)
+
+
 @route("POST", r"/auth/signup", public=True)
 def ep_signup(ctx):
     body = ctx.parsed
@@ -109,8 +130,24 @@ def ep_signup(ctx):
         raise errors.validation_failed("password must be at least 8 characters")
     handle = state_mod.derive_handle(email)
     record = auth.hash_password(password)
-    with state_mod.STATE_LOCK:
-        payload = auth.signup_commit(email, record, display_name, handle)
+    try:
+        with state_mod.STATE_LOCK:
+            payload = auth.signup_commit(email, record, display_name, handle)
+    except errors.ApiError as err:
+        if getattr(ctx, "is_form", False):
+            # R113: the form's failure redisplay carries the error and the typed
+            # values back (the browser never loses the page's fields)
+            page = ui.signup_page(None, error=err.message, email=email,
+                                  display_name_value=display_name)
+            raise _FormRedisplay(err.status, page)
+        raise
+    if getattr(ctx, "is_form", False):
+        # R114: the browser form submits natively to this stage-1 endpoint; the
+        # session cookie carries the minted token and the browser lands on /
+        return 303, Raw("text/plain; charset=utf-8", b"",
+                        extra_headers=[("Location", "/"),
+                                       ("Set-Cookie",
+                                        _session_cookie(payload["token"]))])
     return 201, payload
 
 
@@ -122,9 +159,18 @@ def ep_login(ctx):
     with state_mod.STATE_LOCK:
         user_id, record = auth.login_copy_hash(email)
     if record is None or not auth.verify_password(password, record):
+        if getattr(ctx, "is_form", False):
+            page = ui.login_page(None, error="wrong password or unknown email",
+                                 email=email)
+            raise _FormRedisplay(401, page)
         raise errors.unauthenticated("wrong password or unknown email")
     with state_mod.STATE_LOCK:
         payload = auth.login_finish(user_id)
+    if getattr(ctx, "is_form", False):
+        return 303, Raw("text/plain; charset=utf-8", b"",
+                        extra_headers=[("Location", "/"),
+                                       ("Set-Cookie",
+                                        _session_cookie(payload["token"]))])
     return 200, payload
 
 
@@ -154,6 +200,39 @@ def ep_import(ctx):
 # --- authenticated endpoints ---------------------------------------------------
 
 
+# --- browser session (HTML screens) ----------------------------------------------
+
+COOKIE_NAME = "pebble_token"
+
+
+def cookie_token(headers):
+    """The session token from the browser's cookie, if any (UI-only; the JSON API
+    stays bearer-only per stage-1)."""
+    header = headers.get("Cookie")
+    if not header:
+        return None
+    for part in header.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == COOKIE_NAME and value:
+            return unquote(value)
+    return None
+
+
+def cookie_user(headers):
+    """Resolve the cookie token to a user row. Call while holding STATE_LOCK."""
+    token = cookie_token(headers)
+    if not token:
+        return None
+    service = state_mod.get()
+    user_id = service["tokens"].get(token)
+    if user_id is None or user_id not in service["users"]:
+        return None
+    return service["users"][user_id]
+
+
+def html_response(text):
+    return Raw("text/html; charset=utf-8", text.encode("utf-8"))
+
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
     payload = auth.me_response(user)
@@ -174,14 +253,134 @@ route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
 route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
 route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
 route("POST", r"/requests/(?P<id>[^/]+)/cancel")(requests_endpoints.cancel_request)
-route("GET", r"/requests")(requests_endpoints.list_requests)
+@route("GET", r"/requests", public=True)
+def ep_requests_shared(ctx):
+    """R104/R105: the browser and the API share /requests. HTML for Accept:
+    text/html (cookie session), the stage-1 JSON list otherwise (bearer token,
+    identical behaviour to the pre-UI route)."""
+    if not ui.wants_html(ctx.headers):
+        with state_mod.STATE_LOCK:
+            user = auth.authenticate(ctx.headers)
+            return requests_endpoints.list_requests(user=user, service=state_mod.get(),
+                                                    ctx=ctx)
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            # an API caller asking for HTML with a bearer token still gets the page
+            try:
+                user = auth.authenticate(ctx.headers)
+            except errors.ApiError:
+                user = None
+        if user is None:
+            return 200, html_response(ui.requests_page(None, [], [], None, []))
+        me = auth.me_response(user)
+        now = state_mod.now_utc()
+        me["total"] = user["balance"]
+        me["held"] = state_mod.held(user["id"], service, now)
+        me["available"] = state_mod.available(user["id"], service, now)
+        feed = [payments.payment_response(service, p)
+                for p in reversed(service["payments"])
+                if payments.visible_to(p, user["id"])][:50]
+        incoming = [requests_endpoints.request_response(
+                        service, service["requests"][rid])
+                    for rid in reversed(service["request_order"])
+                    if service["requests"][rid]["payer_id"] == user["id"]][:50]
+        outgoing = [requests_endpoints.request_response(
+                        service, service["requests"][rid])
+                    for rid in reversed(service["request_order"])
+                    if service["requests"][rid]["requester_id"] == user["id"]][:50]
+        return 200, html_response(ui.requests_page(user, incoming, outgoing, me, feed))
 route("POST", r"/splits", idempotent=True)(splits.create_split)
 route("POST", r"/settlements", idempotent=True)(settlements.create_settlement)
 route("POST", r"/authorizations", idempotent=True)(authorizations.create_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
     authorizations.capture_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
-route("GET", r"/authorizations")(authorizations.list_authorizations)
+@route("GET", r"/authorizations", public=True)
+def ep_authorizations_shared(ctx):
+    """R105/R184: the browser and the API share /authorizations. HTML for Accept:
+    text/html (cookie or bearer session), the batch-3 JSON list otherwise."""
+    if not ui.wants_html(ctx.headers):
+        with state_mod.STATE_LOCK:
+            user = auth.authenticate(ctx.headers)
+            return authorizations.list_authorizations(user=user, service=state_mod.get(),
+                                                      ctx=ctx)
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            try:
+                user = auth.authenticate(ctx.headers)
+            except errors.ApiError:
+                user = None
+        if user is None:
+            return 200, html_response(ui.authorizations_page(None, None, [], None))
+        me = auth.me_response(user)
+        now = state_mod.now_utc()
+        me["total"] = user["balance"]
+        me["held"] = state_mod.held(user["id"], service, now)
+        me["available"] = state_mod.available(user["id"], service, now)
+        feed = [payments.payment_response(service, p)
+                for p in reversed(service["payments"])
+                if payments.visible_to(p, user["id"])][:50]
+        listed = authorizations.list_authorizations(user=user, service=service, ctx=ctx)
+        rows = [row for row in listed[1]["authorizations"]]
+        return 200, html_response(ui.authorizations_page(user, me, feed, rows))
+
+
+# --- browser screens (design.md section 14; HTML only when Accept: text/html) -----
+
+@route("GET", r"/", public=True)
+def ep_home(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            return 200, html_response(ui.home_page(None, None, []))
+        me = auth.me_response(user)
+        now = state_mod.now_utc()
+        me["total"] = user["balance"]
+        me["held"] = state_mod.held(user["id"], service, now)
+        me["available"] = state_mod.available(user["id"], service, now)
+        feed = [payments.payment_response(service, p)
+                for p in reversed(service["payments"])
+                if payments.visible_to(p, user["id"])][:50]
+        return 200, html_response(ui.home_page(user, me, feed))
+
+
+@route("GET", r"/signup", public=True)
+def ep_signup_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    error = (ctx.query.get("auth_error") or [None])[0] or ""
+    with state_mod.STATE_LOCK:
+        return 200, html_response(ui.signup_page(cookie_user(ctx.headers), error))
+
+
+@route("GET", r"/login", public=True)
+def ep_login_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    error = (ctx.query.get("auth_error") or [None])[0] or ""
+    with state_mod.STATE_LOCK:
+        return 200, html_response(ui.login_page(cookie_user(ctx.headers), error))
+
+
+@route("GET", r"/split", public=True)
+def ep_split_screen(ctx):
+    if not ui.wants_html(ctx.headers):
+        raise errors.not_found("no such resource")
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        return 200, html_response(ui.split_page(cookie_user(ctx.headers),
+                                                service["minor_units"],
+                                                service["currency"]))
+
+
+
 
 # --- browser UI assets (design.md section 14: bundled, no CDN) ------------------
 
@@ -189,7 +388,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _STATIC_CACHE = {}
 
 
-@route("GET", r"/static/(?P<name>app\.css|app\.js)", public=True)
+@route("GET", r"/static/(?P<name>app\.css|app\.js|app-boot\.js)", public=True)
 def ep_static(ctx):
     name = ctx.params["name"]
     if name not in _STATIC_CACHE:
@@ -261,25 +460,39 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(size)
 
     def _dispatch(self, method):
+        ctx = None
         try:
             split = urlsplit(self.path)
             path = unquote(split.path)
             query = parse_qs(split.query, keep_blank_values=True)
             raw = self._read_body()
+            is_form = False
             if method == "POST":
                 if raw.strip() == b"":
                     parsed = {}
                 else:
-                    try:
-                        parsed = json.loads(raw.decode("utf-8"),
-                                            parse_constant=_reject_constants)
-                    except (ValueError, UnicodeDecodeError):
-                        raise errors.malformed_request("body is not valid JSON")
+                    ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    if ctype == "application/x-www-form-urlencoded":
+                        # the browser's native form flow (R113/R114): the same field
+                        # names, the same validation, a cookie+redirect response
+                        try:
+                            parsed = {k: v[0] for k, v in
+                                      parse_qs(raw.decode("utf-8")).items()}
+                        except (ValueError, UnicodeDecodeError):
+                            raise errors.malformed_request("body is not valid form data")
+                        is_form = True
+                    else:
+                        try:
+                            parsed = json.loads(raw.decode("utf-8"),
+                                                parse_constant=_reject_constants)
+                        except (ValueError, UnicodeDecodeError):
+                            raise errors.malformed_request("body is not valid JSON")
                 state_mod.require_object(parsed)
             else:
                 parsed = None
             route, match = _find_route(method, path)
             ctx = Ctx(method, path, parsed, self.headers, query)
+            ctx.is_form = is_form
             ctx.params = match.groupdict() if match else {}
             status, payload = self._run(route, ctx)
             if payload is None:
@@ -288,6 +501,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_raw(status, payload)
             else:
                 self._send_json(status, payload)
+        except _FormRedisplay as redisplay:
+            self._send_raw(redisplay.status,
+                           Raw("text/html; charset=utf-8",
+                               redisplay.html_text.encode("utf-8")))
         except errors.ApiError as exc:
             self._send_json(exc.status, exc.body())
         except (BrokenPipeError, ConnectionResetError):
@@ -319,12 +536,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", raw.content_type)
         self.send_header("Content-Length", str(len(raw.body)))
+        for name, value in raw.extra_headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(raw.body)
 
     def _send_empty(self, status):
         self.send_response(status)
         self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_redirect(self, status, location, cookie=None):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
 
 

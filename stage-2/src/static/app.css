@@ -432,3 +432,29 @@ body {
   white-space: nowrap;
   border: 0;
 }
+/* --- session area (T17) ------------------------------------------------------------ */
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.handle-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--color-surface-dim);
+  color: var(--color-ink-soft);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+}
+
+.nav-cta {
+  background: var(--color-brand);
+  color: var(--color-brand-ink);
+}
+
+.nav-cta:hover { background: var(--color-brand-deep); color: var(--color-brand-ink); }
+
+.wallet-secondary .wallet-chip { vertical-align: baseline; }
