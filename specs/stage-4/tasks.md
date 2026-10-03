@@ -1,0 +1,35 @@
+# Pocketful — Stage 4 tasks
+
+Continues stage-3's task numbering (stage-3 ended at T29). Carries forward `stage-3/` as
+`stage-4/` (T30 below does the mechanical carry-forward copy, done by the coordinator per
+the mandate — not a developer task).
+
+## Batch ordering note
+
+Every new surface in this stage shares logic with every other one: `refunded_total` is read
+by both the refund handler (R300) and the correction handlers (R308); the per-item
+correction validator is shared verbatim between the single-correction endpoint and each
+batch item (ADR-009); the export-format bump needs both `refund_of` (from the refund task)
+and `correction_batch_id` (from the batch-correction task) to exist before it can be
+written. There is no pair of tasks here that can both be spec-complete without one building
+on the other, so — unlike stages 1-3 — this stage's batches form a single dependency chain
+rather than two independently-startable branches. Each batch is still a coherent,
+independently reviewable slice; the exception to "at least two batches startable from head"
+is deliberate, not an oversight.
+
+| Task | Requirements | Files | Depends on | Done test | Status | Batch |
+|---|---|---|---|---|---|---|
+| T31 | R294-R305, R332 | `src/ledger.py` (add `refunded_total`), `src/payments.py` (`append_payment` gains `refund_of=None` kwarg), `src/refunds.py` (new: `create_refund` handler), `src/server.py` (route `POST /payments/(?P<payment_id>[^/]+)/refunds`, idempotent=True) | none (builds on stage-3 head) | Unit: create/201 shape (R301); replay 200 original body (R302); non-receiver 403; unknown payment 404; refund-of-refund 422 `invalid_refund_target`; invalid amount 422; cumulative-exceeds 422 `refund_exceeds_payment`; insufficient-funds 409 against `available` not `balance`; refunding a capture/paid-request leaves the authorization/request untouched (R304); refund of a settlement member leaves `settlement_id` null on the refund and unchanged on the original members (R332). | pending | 1 |
+| T32 | R306-R309 | `src/corrections.py` (`linked_payment_immutable` check gains `refund_of is not None`; new `refund_exceeds_payment` check using `ledger.refunded_total`; per-item validation factored into `validate_item(service, payment_id, body, now)` returning `(payment, amount, delta, effective_raw)` or raising, called by `create_correction`) | T31 | Unit: correcting a capture or a refund payment is 422 `linked_payment_immutable` (both disjuncts); correcting a payment below its refunded total is 422 `refund_exceeds_payment`; existing stage-3 correction tests (stale_revision, insufficient_funds, historical_overdraft, 404/403/422 shapes) still pass unchanged after the `validate_item` refactor — same behaviour, same code path, just factored. | pending | 2 |
+| T33 | R310-R331, R333 | `src/correction_batches.py` (new: all 6 phases per design.md §28 — request shape, per-item via `corrections.validate_item`, operator permission, settlement completeness, combined affordability, combined historical sweep with trial-append/pop-on-failure), `src/corrections.py` (generalize `_sweep_historical_overdraft` to accept a set of parties and a set of tentative revisions instead of one payment's two parties), `src/ids.py` (`cb_` prefix), `src/server.py` (route `POST /correction-batches`, idempotent=True) | T32 | Unit: 1..32 distinct-id shape (422 on 0/33/duplicate); per-item errors returned in input order (first failing item wins, each error code reachable: 404, field-shape 422, `linked_payment_immutable` 422, `refund_exceeds_payment` 422, `stale_revision` 409, `effective_at`-in-future 422); non-operator 403 (after item validation passes); `incomplete_settlement` 422 when a settlement member is omitted; mismatched settlement `effective_at` 422 `validation_failed` (offset-tolerant: `Z` vs `+00:00` must NOT trip this); combined `insufficient_funds` 409 for a batch whose net effect (not any single leg) overdraws; combined `historical_overdraft` 409 with all tentative revisions popped and state fully restored (assert payments/revisions/balances/idempotency identical to pre-attempt); successful batch: single shared `recorded_at` strictly later than every member's prior `recorded_at`, every new revision carries the same `correction_batch_id`, response shape (`correction_batch_id`, `recorded_at`, `revisions` in input order); replay returns original 200 body; a size-1 batch behaves identically to the equivalent single correction (ADR-009). | pending | 3 |
+| T34 | R305 (import defaulting), R325 (interface), A28, R334 | `src/testctl.py` (`FORMAT_VERSION = 4`, `IMPORT_VERSIONS = (1,2,3,4)`, `_build_from_state`: default/validate `refund_of` per payment with referential check against other imported payments, default/validate `correction_batch_id` per revision), `src/ledger.py`/`src/corrections.py` (`initial_revision`/`revision_entry` default `correction_batch_id: null`) | T31, T33 | Unit: export emits `format_version: 4` with `refund_of`/`correction_batch_id` on every payment/revision; import of a hand-built format-1/2/3 fixture defaults both new fields to null everywhere; import of a format-4 export round-trips a refund payment and a batch-created revision exactly (including `refund_exceeds_payment`/`invalid_refund_target` behaving identically against the re-imported state); a format-4 payload with `refund_of` naming a nonexistent payment is 422 `validation_failed`, nothing imported; `GET /payments/{id}/revisions` surfaces `correction_batch_id: null` for single corrections and the real id for batch-created ones. | pending | 4 |
+| T35 | R292, R300, R303, R320, R322, R323, R333 (money invariants) | `tests/test_refunds.py` (new), `tests/test_correction_batches.py` (new) | T31, T33, T34 | Unit, concurrent (threaded, against the real `STATE_LOCK`): two concurrent identical-key refund requests give one 201 and one 200-replay, money moves once; two concurrent corrections (single/single, single/batch, batch/batch) sharing the same `expected_revision` on one payment — exactly one commits, the other gets 409 `stale_revision`, no partial state; a rejected batch under concurrent load never leaves a partially-applied revision (assert conservation: sum of all balances equals the last reset's seed, across every run); a refund chain (payment -> refund -> correction near the refunded boundary) never produces a negative `available` at any `as_of`/`known_at` combination. | pending | 4 |
+
+Carry-forward (coordinator, not a developer task): copy `stage-3/` to `stage-4/`, strip any
+`.git` metadata from the copy, commit alone before `requirements.md`/`design.md`/`tasks.md`.
+
+Requirement coverage: R291-R293 (overview/compatibility) are carried by every task below
+continuing to pass stage 1-3's own suites unchanged (T31-T35 all build on, not replace,
+stage-3 code) — no dedicated task line, verified instead by the full regression run each
+batch's done-test includes running the existing suite (`python -m pytest` / stage-3's own
+`tests/`) alongside its own new tests.
