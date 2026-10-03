@@ -72,9 +72,12 @@ existing step-6 sequence right where their status code already sits:
   uses the correction's *requested* `amount` (the new total, not a delta) against the same
   `refunded_total` helper §26 introduces.
 
-`refunded_total` moves to `src/refunds.py` as a small pure function of `service` and a
-payment id, imported by both `corrections.py` and `refunds.py` — one implementation, two
-call sites, avoiding the duplication a second inline sum would otherwise create.
+`refunded_total` lives in `src/ledger.py` (not `src/refunds.py` — corrected to match
+tasks.md's T31) as a small pure function of `service` and a payment id, imported by both
+`corrections.py` and `refunds.py` — one implementation, two call sites, avoiding both the
+duplication a second inline sum would create and the module cycle a `refunds.py` ->
+`corrections.py` import would otherwise risk, since `ledger.py` already has no dependents
+among this stage's new modules.
 
 ## 28. `POST /correction-batches` — idempotent path 10
 
