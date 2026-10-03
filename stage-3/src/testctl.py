@@ -168,6 +168,13 @@ def build_from_fixture(fixture):
     # their opening balances must keep every balance >= 0 throughout, so the fixture
     # never asserts a balance that the money movement could not have produced.
     running = {user_id: user["base_balance"] for user_id, user in service["users"].items()}
+    # The opening balance is iteration 0 of the replay: a negative one asserts an
+    # impossible "before anything moved" state even if every payment is affordable.
+    for user_id, opening in running.items():
+        if opening < 0:
+            raise errors.validation_failed(
+                "seeded payment history would overdraw user %s before any payment"
+                % user_id)
     ordered = sorted(service["payments"],
                      key=lambda p: (state_mod.parse_rfc3339(p["created_at"]), p["id"]))
     for p in ordered:

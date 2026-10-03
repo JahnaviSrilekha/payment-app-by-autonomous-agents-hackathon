@@ -334,6 +334,25 @@ class TestResetSeeding(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "validation_failed")
         self.assertEqual(self.export(), before)
 
+    def test_negative_opening_balance_is_422_even_if_replayed_nonnegative(self):
+        """R218: the opening balance is iteration 0 of the replay — a user whose only
+        seeded payment is one they RECEIVE computes a negative base_balance, and the
+        single receiving payment alone must not hide it (reviewer reproduction)."""
+        util.reset(self.client, self.seeded_fixture())
+        before = self.export()
+        bad = self.seeded_fixture()
+        # bob (balance 2500) receives 5000 and sent nothing: base_balance = -2500,
+        # yet the single receiving payment replays to a nonnegative 2500 — only the
+        # opening check catches it.
+        bad["payments"] = [
+            {"id": "p_1", "from_user_id": "u_ada", "to_user_id": "u_bob",
+             "amount": 5000, "created_at": "2020-01-01T00:00:00+00:00"},
+        ]
+        status, payload, _ = self.client.request("POST", "/_test/reset", bad)
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertEqual(self.export(), before)
+
     def test_seed_history_touching_zero_is_accepted(self):
         """R218's boundary: replaying down to exactly 0 is nonnegative, so valid
         (ada opens at 12000, pays 12000 -> touches 0, is paid back 10000)."""
