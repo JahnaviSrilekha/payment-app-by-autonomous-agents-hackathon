@@ -19,6 +19,7 @@ import auth
 import authorizations
 import errors
 import idempotency
+import ledger
 import payments
 import requests as requests_endpoints
 import settlements
@@ -237,13 +238,53 @@ def html_response(text):
 @route("GET", r"/me")
 def ep_me(ctx, user, service):
     payload = auth.me_response(user)
-    # balance == total always; available/held are derived at read time from the open
-    # holds (design.md section 11). Runs while holding STATE_LOCK, like every read.
+    # The request-start instant, read once (A16): the live view's clock and the
+    # temporal view's defaults are the same instant (R281, R248).
     now = state_mod.now_utc()
-    payload["total"] = user["balance"]
-    payload["held"] = state_mod.held(user["id"], service, now)
-    payload["available"] = state_mod.available(user["id"], service, now)
+    as_of_raw = ctx.query.get("as_of")
+    known_raw = ctx.query.get("known_at")
+    if not as_of_raw and not known_raw:
+        # R200: without temporal query parameters the response retains the existing
+        # money fields and reports current corrected values — the live fast path,
+        # byte-for-byte stage-2.
+        payload["total"] = user["balance"]
+        payload["held"] = state_mod.held(user["id"], service, now)
+        payload["available"] = state_mod.available(user["id"], service, now)
+        return 200, payload
+    # R198/R199, R246/R252: any supplied instant must be an RFC 3339 timestamp with
+    # an offset — a naive local time, a bare date or an empty value is 422.
+    as_of = _query_instant(as_of_raw, "as_of")
+    known_at = _query_instant(known_raw, "known_at")
+    if as_of is None:
+        as_of = now  # R281: without as_of, the instant the request began
+    if known_at is None:
+        known_at = now  # R248: everything known when the read begins
+    # R276: all four money fields describe the same view — total is the historical
+    # balance (stage-3 effective/recorded-time rules, R283), held the historical
+    # holds view, available = total - held, balance = total.
+    total = ledger.balance_view(user, as_of, known_at, service=service)
+    held = authorizations.held_view(user["id"], service, as_of, known_at)
+    payload["balance"] = total
+    payload["total"] = total
+    payload["held"] = held
+    payload["available"] = total - held
+    # R204/R253: both instants are echoed back exactly as given.
+    if as_of_raw is not None:
+        payload["as_of"] = as_of_raw[0]
+    if known_raw is not None:
+        payload["known_at"] = known_raw[0]
     return 200, payload
+
+
+def _query_instant(values, name):
+    """Parse one optional query-string instant; None when absent."""
+    if not values:
+        return None
+    try:
+        return state_mod.parse_rfc3339(values[0])
+    except ValueError:
+        raise errors.validation_failed(
+            "%s must be an RFC 3339 timestamp" % name)
 
 
 # --- payments, activity, requests (batches 2+) ---------------------------------
