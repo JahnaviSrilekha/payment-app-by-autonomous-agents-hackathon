@@ -187,7 +187,9 @@ def create_correction(ctx, user, service):
     }
     payment["revisions"].append(tentative)
     try:
-        _sweep_historical_overdraft(payment, delta, now)
+        if delta != 0:  # a no-op restatement moves no money (stage-3's shortcut)
+            _sweep_historical_overdraft(
+                (payment["from_user_id"], payment["to_user_id"]), now)
     except errors.ApiError:
         payment["revisions"].pop()  # R239: nothing was ever committed
         raise
@@ -198,15 +200,23 @@ def create_correction(ctx, user, service):
     return 201, correction_response(payment, tentative)
 
 
-def _sweep_historical_overdraft(payment, delta, now):
-    """R237-R238/R284: with the tentative revision in place, both parties' total and
-    available must be nonnegative at every boundary instant (A18: the parties'
-    payment effective instants plus their holds' lifecycle instants — creation,
-    captures, void, expiry — are the only instants where either can change), under
-    the latest known revisions (known_at = now)."""
-    if delta == 0:
-        return  # a no-op restatement moves no money
-    parties = (payment["from_user_id"], payment["to_user_id"])
+def _sweep_historical_overdraft(parties, now):
+    """R237-R238/R284: with every caller's tentative revision already appended, each
+    party's total and available must be nonnegative at every boundary instant (A18:
+    the parties' payment effective instants plus their holds' lifecycle instants —
+    creation, captures, void, expiry — are the only instants where either can
+    change), under the latest known revisions (known_at = now). The caller appends
+    its tentative revision(s) to the payments' histories before calling and pops
+    them on failure, so this function only ever reads committed-plus-tentative
+    state; the caller holds STATE_LOCK throughout. parties is any iterable of user
+    ids (the single correction passes its payment's two parties, design section 19;
+    the batch endpoint passes the union across every item, design section 28
+    phase 6) — duplicates are collapsed in first-appearance order."""
+    seen = []
+    for user_id in parties:
+        if user_id not in seen:
+            seen.append(user_id)
+    parties = seen
     boundaries = set()
     for user_id in parties:
         for p in ledger.payments_touching(service=state_mod.get(), user_id=user_id):

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth
 import authorizations
+import correction_batches
 import corrections
 import errors
 import idempotency
@@ -296,6 +297,8 @@ route("GET", r"/activity")(payments.activity)
 route("GET", r"/statement")(statements.statement)
 route("POST", r"/payments/(?P<payment_id>[^/]+)/corrections", idempotent=True)(
     corrections.create_correction)
+route("POST", r"/correction-batches", idempotent=True)(
+    correction_batches.create_correction_batch)
 route("POST", r"/payments/(?P<payment_id>[^/]+)/refunds", idempotent=True)(
     refunds.create_refund)
 route("GET", r"/payments/(?P<payment_id>[^/]+)/revisions")(corrections.list_revisions)
