@@ -103,3 +103,18 @@ earlier stages. `COVERAGE.md` is the committed requirement-id → test table.
 - **SA-7.** A correction restating the current amount is valid and appends a
   revision without moving money (design §19 step 6); tagged `design-19`,
   excluded from requirement coverage.
+- **SA-8.** A wrong JSON *type* in a correction body (`expected_revision`
+  `"1"`/`1.5`, `amount` `"5"`/`1.5`, `reason` `7`) is asserted as 400
+  `malformed_request` OR 422 `validation_failed`: carried R43 reserves 400
+  for wrong field types while the stage-3 correction contract (R222-R227)
+  says invalid input is 422. Wrong *values* (right type) are strictly 422.
+  The ambiguity is flagged to @coordinator for adjudication.
+- **SA-9.** A write landing in the same second as a subsequent
+  selection-based read (statement/`as_of` with `known_at` omitted) can
+  under-select for up to ~1s: probed evidence shows a revision recorded at
+  `T` not selected by a read beginning at `T+ε`, though R248 says omission
+  means everything known when the read begins. The suite sleeps ~1.1s after
+  such writes (marked `SA-9`) so verification is not blocked on the same
+  second; the same-second behavior itself is reported to @reviewer for
+  adjudication (candidate R248 divergence, plus the R279 capture-known
+  inversion which the suite asserts spec-correctly and currently fails on).
