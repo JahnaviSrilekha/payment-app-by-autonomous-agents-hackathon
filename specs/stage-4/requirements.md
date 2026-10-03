@@ -314,10 +314,16 @@ numbers only what stage 4 adds, continuing from R291/A21. Source: `we-are-devs/p
   check, which itself runs before the collective affordability check — `create_settlement`):
   1. Request-shape: `corrections` is an array of 1..32 objects with distinct `payment_id`s
      (422 `validation_failed`, R312).
-  2. Per-item validation, items visited in input order, each item fully validated (field
-     shape 422 -> payment lookup 404 -> `linked_payment_immutable` 422 ->
+  2. Per-item validation, items visited in input order, each item fully validated (payment
+     lookup 404 -> field shape 422 -> `linked_payment_immutable` 422 ->
      `refund_exceeds_payment` 422 -> `stale_revision` 409 -> `effective_at` not later than
      now 422) before moving to the next item; the first failing item's error is returned.
+     Lookup precedes field shape, not the reverse — matching design.md §28's explicit
+     arrow order and the same real-code precedent A15 already established for the single-
+     correction endpoint ("payment lookup (404) -> sender check (403) -> field validation
+     (422)"). An earlier draft of this sentence listed field shape before lookup; that was
+     a transcription slip against A15's own precedent, caught during the T32 review
+     (developer's decision 1) and corrected here.
   3. Operator permission (403 `forbidden`, R310) — after every item is individually valid,
      mirroring `create_settlement`'s real ordering.
   4. Settlement completeness (R316/R317): for every `settlement_id` touched by any item
