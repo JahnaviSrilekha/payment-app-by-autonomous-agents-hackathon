@@ -12,8 +12,8 @@ import state as state_mod
 from auth import hash_password
 
 TRACK = "pocketful"
-FORMAT_VERSION = 2
-IMPORT_VERSIONS = (1, 2)
+FORMAT_VERSION = 3
+IMPORT_VERSIONS = (1, 2, 3)
 VALID_MINOR_UNITS = (0, 2, 3)
 REQUEST_STATUSES = ("pending", "paid", "declined", "cancelled")
 AUTHORIZATION_STATUSES = state_mod.AUTHORIZATION_STATUSES
@@ -395,6 +395,11 @@ def export_snapshot():
     writes never change the snapshot."""
     service = state_mod.get()
     snapshot = copy.deepcopy(service)
+    snapshot.pop("statement_snapshots", None)
+    # A20: every exported user carries base_balance as a stored field (accounts
+    # opened after reset hold an implicit zero, R217).
+    for user in snapshot["users"].values():
+        user.setdefault("base_balance", 0)
     snapshot["idempotency"] = idempotency.export_records(service)
     return {
         "track": TRACK,
@@ -422,12 +427,49 @@ def validate_import(payload):
 
     raw = payload["state"]
     try:
-        return _build_from_state(raw)
+        return _build_from_state(raw, version)
     except (KeyError, TypeError, ValueError):
         raise errors.validation_failed("state is invalid")
 
 
-def _build_from_state(raw):
+def _validate_stored_revisions(payment):
+    """A format-3 payment carries its full revision history as stored data (A20):
+    revision 1 is the original amount at the original instant with reason \"\" (R214),
+    revision numbers ascend contiguously from 1, recorded_at strictly increases
+    (R230) and every amount is a nonnegative integer."""
+    revisions = payment["revisions"]
+    if not isinstance(revisions, list) or not revisions:
+        raise ValueError("payment revisions")
+    for revision in revisions:
+        if not isinstance(revision, dict):
+            raise ValueError("revision entry")
+        number = revision["revision"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError("revision number")
+        amount = revision["amount"]
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+            raise ValueError("revision amount")
+        if not isinstance(revision["reason"], str):
+            raise ValueError("revision reason")
+        try:
+            state_mod.parse_rfc3339(revision["effective_at"])
+            state_mod.parse_rfc3339(revision["recorded_at"])
+        except ValueError:
+            raise ValueError("revision timestamps")
+    if [r["revision"] for r in revisions] != list(range(1, len(revisions) + 1)):
+        raise ValueError("revision numbering")
+    for earlier, later in zip(revisions, revisions[1:]):
+        if state_mod.parse_rfc3339(earlier["recorded_at"]) \
+                >= state_mod.parse_rfc3339(later["recorded_at"]):
+            raise ValueError("recorded_at must strictly increase")
+    first = revisions[0]
+    if first["amount"] != payment["amount"] \
+            or first["effective_at"] != payment["created_at"] \
+            or first["recorded_at"] != payment["created_at"]:
+        raise ValueError("revision 1 must be the original payment")
+
+
+def _build_from_state(raw, version):
     currency = raw["currency"]
     if not isinstance(currency, str):
         raise ValueError("currency")
@@ -462,6 +504,13 @@ def _build_from_state(raw):
         balance = user["balance"]
         if isinstance(balance, bool) or not isinstance(balance, int) or balance < 0:
             raise ValueError("balance")
+        if version >= 3:
+            # A20: a format-3 export carries base_balance as stored data — taken
+            # verbatim, never re-derived (a corrected balance cannot recover it).
+            base_balance = user.get("base_balance")
+            if isinstance(base_balance, bool) or not isinstance(base_balance, int) \
+                    or base_balance < 0:
+                raise ValueError("user base_balance")
         _require_password_hash(user["password_hash"])
         service["users"][user_id] = copy.deepcopy(user)
         service["handles"][user["handle"]] = user_id
@@ -535,7 +584,30 @@ def _build_from_state(raw):
             raise ValueError("payment authorization_id")
         stored_payment = copy.deepcopy(payment)
         stored_payment.setdefault("authorization_id", None)  # stage-1 payments: null
+        if version >= 3:
+            # A20: the exported revisions are the one source of truth — carried
+            # through verbatim (a stage-3 round trip preserves correction history,
+            # R241 extended to survive import).
+            _validate_stored_revisions(stored_payment)
+        else:
+            # R273: stages 1-2 carry no correction history — materialize the
+            # implicit revision 1 (R214); a settlement member's created_at is the
+            # settlement's committed_at, carried on both axes (R271).
+            stored_payment.setdefault("revisions", [ledger.initial_revision(
+                stored_payment["amount"], stored_payment["created_at"])])
         service["payments"].append(stored_payment)
+    if version < 3:
+        # R216: base_balance is derived exactly as reset derives it — from the
+        # imported balance minus the net of the imported payments (correct for
+        # formats 1-2: they carry no correction history to lose).
+        for user_id, user in service["users"].items():
+            net = 0
+            for p in service["payments"]:
+                if p["to_user_id"] == user_id:
+                    net += p["amount"]
+                elif p["from_user_id"] == user_id:
+                    net -= p["amount"]
+            user["base_balance"] = user["balance"] - net
     for request_id, request in raw["requests"].items():
         _require_fields(request, ("id", "requester_id", "payer_id", "amount", "currency",
                                   "note", "status", "payment_id", "created_at", "seq"))

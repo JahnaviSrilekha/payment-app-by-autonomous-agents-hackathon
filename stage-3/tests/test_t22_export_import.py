@@ -1,4 +1,5 @@
-"""T22: format_version 2 export/import round-trips (R138-R142, R158, R174)."""
+"""T22: format_version export/import round-trips (R138-R142, R158, R174); the
+version is 3 since stage 3 (A20), with versions 1-3 still accepted on import."""
 
 import sys
 import unittest
@@ -84,7 +85,7 @@ class TestT22RoundTrips(unittest.TestCase):
         self.client.request("POST", "/authorizations/a_1/capture",
                             {"amount": 600, "final": False}, token=bob, key="cap-1")
         _, export, _ = self.client.request("GET", "/_test/export")
-        self.assertEqual(export["format_version"], 2)
+        self.assertEqual(export["format_version"], 3)  # A20: stage 3 exports version 3
         state = export["state"]
         self.assertEqual(state["authorization_ttl_seconds"], 300)
         self.assertEqual(len(state["authorizations"]), 3)

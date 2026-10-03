@@ -261,11 +261,11 @@ class TestT10ExportImport(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
 
-    def test_export_is_format_version_2_and_round_trips(self):
+    def test_export_is_format_version_2_and_round_trips(self):  # see A20: now 3
         util.reset(self.client, hold_fixture())
         token = login_ada(self.client)
         _, export, _ = self.client.request("GET", "/_test/export")
-        self.assertEqual(export["format_version"], 2)
+        self.assertEqual(export["format_version"], 3)  # A20: stage 3 exports version 3
         status, _, _ = self.client.request("POST", "/_test/import", export)
         self.assertEqual(status, 204)
         _, me, _ = self.client.request("GET", "/me", token=token)  # token survives import
@@ -300,8 +300,9 @@ class TestT10ExportImport(unittest.TestCase):
     def test_import_rejects_unknown_versions_and_bad_authorizations(self):
         util.reset(self.client, hold_fixture())
         _, export, _ = self.client.request("GET", "/_test/export")
-        v3 = dict(export, format_version=3)
-        status, payload, _ = self.client.request("POST", "/_test/import", v3)
+        # A20: format_version 3 is accepted since stage 3; 4 remains unknown
+        v4 = dict(export, format_version=4)
+        status, payload, _ = self.client.request("POST", "/_test/import", v4)
         self.assertEqual(status, 422)
         bad_state_cases = [
             dict(export["state"], authorizations="x"),
