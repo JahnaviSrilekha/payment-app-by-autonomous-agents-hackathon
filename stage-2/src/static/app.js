@@ -306,7 +306,9 @@
       "pay-uncertain": "#pay-form",
       "request-error": "#request-form",
       "split-error": "#split-form",
-      "auth-error": "#login-form"
+      "auth-error": "#login-form",
+      "authorize-error": "#authorize-form",
+      "authorization-error": "#authorizations-card"
     };
     var selector = map[testid] || "main";
     return document.querySelector(selector) || document.querySelector("main");
@@ -325,10 +327,10 @@
       return;
     }
     var anchor = host.querySelector(".button, button");
-    if (anchor && anchor.parentNode) {
-      anchor.parentNode.insertBefore(el, anchor); // the anchor may be nested
+    if (anchor && anchor.parentNode === host) {
+      host.insertBefore(el, anchor);
     } else {
-      host.insertBefore(el, host.firstChild);
+      host.insertBefore(el, host.firstChild); // no direct-child control: place at top
     }
   }
 

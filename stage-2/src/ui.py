@@ -577,7 +577,8 @@ def authorizations_page(user, me, payments, authorizations, boot_extra=None):
     body = (
         wallet_section(me)
         + authorize_form()
-        + '<section class="card"><h2 class="card-title">Authorizations</h2>'
+        + '<section class="card" id="authorizations-card">'
+        '<h2 class="card-title">Authorizations</h2>'
         + authorizations_section(authorizations, me["minor_units"],
                                  me["currency"], user["id"])
         + "</section>"

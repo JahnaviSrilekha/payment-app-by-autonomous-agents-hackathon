@@ -60,9 +60,11 @@ function authzPage(rows) {
   mk("authorize-handle"); mk("authorize-amount").value = "20.00";
   mk("authorize-note"); mk("authorize-visibility").value = "public";
   const list = mk("authorization-list", "ul");
-  list.parentNode = main; main.children.push(list);
-  registerPage({ main, ids: { "authorize-form": form } });
-  return { main, submit, list };
+  const card = fakeEl("section"); card.setAttribute("id", "authorizations-card");
+  card.appendChild(list); list.parentNode = card;
+  card.parentNode = main; main.children.push(card);
+  registerPage({ main, ids: { "authorize-form": form, "authorizations-card": card } });
+  return { main, submit, list, card };
 }
 
 function standardFetch(rows) {
@@ -184,6 +186,59 @@ t("void posts without an idempotency key (R176)", async () => {
   const call = findPost("/authorizations/a_2/void");
   assert.ok(call, "POST void sent");
   assert.ok(!call.init.headers["Idempotency-Key"], "no key on void");
+});
+
+t("refused authorize shows authorize-error inside the authorize form (R188)", async () => {
+  clearFetchCalls();
+  const page = authzPage(ROWS);
+  setFetchImpl(async (url) => {
+    if (url === "/authorizations") {
+      return { status: 404, text: async () => JSON.stringify({ error: { code: "not_found", message: "no user has that handle" } }) };
+    }
+    if (url === "/me") {
+      return { status: 200, text: async () => JSON.stringify({ balance: 8000, total: 8000, available: 6800, held: 1200, currency: "EUR", minor_units: 2 }) };
+    }
+    if (url.startsWith("/activity")) {
+      return { status: 200, text: async () => JSON.stringify({ payments: [] }) };
+    }
+    return { status: 200, text: async () => JSON.stringify({ authorizations: ROWS, has_more: false }) };
+  });
+  Pebble.initAuthorizations(BOOT);
+  await new Promise((r) => setTimeout(r, 5));
+  byTestid("authorize-handle").value = "ghost";
+  byTestid("authorize-amount").value = "10.00";
+  await page.submit.listeners.click();
+  const err = byTestid("authorize-error");
+  assert.ok(err, "authorize-error present");
+  assert.strictEqual(err.textContent, "no user has that handle");
+  assert.strictEqual(err.parentNode, document.getElementById("authorize-form"),
+    "authorize-error anchors to the authorize form, not the wallet card");
+});
+
+t("refused capture shows authorization-error inside the authorizations card (R190)", async () => {
+  clearFetchCalls();
+  const page = authzPage(ROWS);
+  setFetchImpl(async (url) => {
+    if (url.startsWith("/authorizations/a_1/capture")) {
+      return { status: 422, text: async () => JSON.stringify({ error: { code: "capture_exceeds_authorization", message: "capture exceeds the remaining authorized amount" } }) };
+    }
+    if (url === "/me") {
+      return { status: 200, text: async () => JSON.stringify({ balance: 8000, total: 8000, available: 6800, held: 1200, currency: "EUR", minor_units: 2 }) };
+    }
+    if (url.startsWith("/activity")) {
+      return { status: 200, text: async () => JSON.stringify({ payments: [] }) };
+    }
+    return { status: 200, text: async () => JSON.stringify({ authorizations: ROWS, has_more: false }) };
+  });
+  Pebble.initAuthorizations(BOOT);
+  await new Promise((r) => setTimeout(r, 5));
+  const card = document.getElementById("authorizations-card");
+  assert.ok(card, "the authorizations card carries the error host id");
+  await page.main.listeners.click({ target: byTestid("authorization-capture-a_1") });
+  const err = byTestid("authorization-error");
+  assert.ok(err, "authorization-error present");
+  assert.strictEqual(err.parentNode, card,
+    "authorization-error anchors to the authorizations card, not the wallet card");
 });
 
 Promise.all(pending).then(() => {
