@@ -831,8 +831,10 @@ def settlement_member_correction_rejected(ctx):
 def downgrade(export, version, strip_auths=False):
     """Downgrade an export to look like an older format_version (A20/A28):
     v1 also loses authorizations and revisions; v2 keeps holds; v3 keeps
-    revisions. Stage-4's two new stored fields (refund_of, correction_batch_id)
-    are stripped so v1-3 payloads exercise the import defaulting path."""
+    revisions and base_balance — carrying them is what makes it v3 — with
+    only the two v4-only stored fields (refund_of, correction_batch_id)
+    stripped, so v1/v2 exercise import's rev-1 materialization and v3
+    exercises its revisions passthrough (both default the new fields null)."""
     st = json.loads(json.dumps(export))
     st["format_version"] = version
     state = st.get("state", {})
@@ -843,11 +845,16 @@ def downgrade(export, version, strip_auths=False):
         for pay in state.get("payments", []) or []:
             pay.pop("authorization_id", None)
     for pay in state.get("payments", []) or []:
-        pay.pop("revisions", None)
+        if version < 3:
+            pay.pop("revisions", None)
+        else:
+            for rev in pay.get("revisions", []) or []:
+                rev.pop("correction_batch_id", None)
         pay.pop("refund_of", None)
     users = state.get("users") or {}
     for u in (users.values() if isinstance(users, dict) else users):
-        u.pop("base_balance", None)
+        if version < 3:
+            u.pop("base_balance", None)
     return st
 
 
