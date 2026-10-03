@@ -887,21 +887,21 @@ def me_historical_holds_lifecycle(ctx):
     c_auth = auth.json["created_at"]
     eq(auth.json.get("closed_at", "missing"), None, "closed_at null while open (R282)")
     eq(ada.me(f"as_of={c_auth}")["held"], 500, "hold starts at creation (inclusive)")
-    eq(ada.me(f"as_of={parse_ts(c_auth) - timedelta(seconds=1)}")["held"], 0,
+    eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "just before creation nothing is held (R277)")
     cap1 = bob.capture(aid, body={"amount": 200}, key="h-c1")
     eq(cap1.status, 201, "nonfinal capture")
     c2 = cap1.json["created_at"]
     eq(ada.me(f"as_of={c2}")["held"], 300, "capture reduces the hold at capture time")
-    eq(ada.me(f"as_of={parse_ts(c2) - timedelta(seconds=1)}")["held"], 500,
+    eq(ada.me(f"as_of={iso(parse_ts(c2) - timedelta(seconds=1))}")["held"], 500,
        "just before the capture the full hold remains")
-    eq(ada.me(f"as_of={c_auth}&known_at={parse_ts(c2) - timedelta(seconds=1)}")["held"],
+    eq(ada.me(f"as_of={c_auth}&known_at={iso(parse_ts(c2) - timedelta(seconds=1))}")["held"],
        500, "capture not yet known -> hold unreduced (R279)")
     eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 300,
        "known capture reduces the historical hold")
-    eq(ada.me(f"as_of={parse_ts(c_auth) - timedelta(seconds=1)}")["held"], 0,
+    eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "before the authorization existed: nothing held")
-    eq(ada.me(f"as_of={parse_ts(c_auth) - timedelta(seconds=1)}"
+    eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}"
               f"&known_at={c2}")["held"], 0,
        "authorization unknown at known_at -> contributes nothing (R279)")
     cap2 = bob.capture(aid, body={"amount": 300, "final": True}, key="h-c2")
@@ -927,7 +927,7 @@ def me_historical_holds_lifecycle(ctx):
     e1 = ada.authorize("bob", 150, key="h-e")
     eq(e1.status, 201, "short-ttl authorize")
     exp = e1.json["expires_at"]
-    eq(ada.me(f"as_of={parse_ts(exp) - timedelta(seconds=1)}")["held"], 150,
+    eq(ada.me(f"as_of={iso(parse_ts(exp) - timedelta(seconds=1))}")["held"], 150,
        "still held just before expiry")
     m = ada.me(f"as_of={exp}")
     eq(m["held"], 0, "expiry releases at expires_at exactly (R278)")
@@ -952,7 +952,7 @@ def me_historical_holds_lifecycle(ctx):
        "creation known -> deadline known: expired at as_of (R279)")
     eq(ada.me(f"as_of={plus30s}&known_at={kn}")["held"], 700,
        "known creation, as_of before deadline: open")
-    eq(ada.me(f"as_of={plus30s}&known_at={parse_ts(c3k) - timedelta(seconds=1)}")["held"],
+    eq(ada.me(f"as_of={plus30s}&known_at={iso(parse_ts(c3k) - timedelta(seconds=1))}")["held"],
        0, "creation unknown at known_at: contributes nothing")
 
 
