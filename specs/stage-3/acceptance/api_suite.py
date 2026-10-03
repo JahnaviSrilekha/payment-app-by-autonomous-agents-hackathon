@@ -936,8 +936,9 @@ def me_historical_holds_lifecycle(ctx):
        "just before the capture the full hold remains")
     eq(ada.me(f"as_of={c_auth}&known_at={iso(parse_ts(c2) - timedelta(seconds=1))}")["held"],
        500, "capture not yet known -> hold unreduced (R279)")
-    eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 300,
-       "known capture reduces the historical hold")
+    eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 500,
+       "capture known but as_of still before the event: the reduction happens "
+       "at capture time (R277); known_at only gates knowledge (R279)")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "before the authorization existed: nothing held")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}"
