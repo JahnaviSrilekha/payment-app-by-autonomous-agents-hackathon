@@ -493,18 +493,19 @@ def correction_historical_overdraft(ctx):
                   fx_pay("h2", "u_carol", "u_erin", 400, created_at=S(3000)),
                   fx_pay("h3", "u_frank", "u_carol", 1000, created_at=S(2000))]))
     carol = User_(ctx.api, "carol").login()
-    err_is_(carol.correct("h1", {"expected_revision": 1, "amount": 100,
-                                 "effective_at": S(4000), "reason": "reduce"},
-                          key="ho1"),
+    dave = User_(ctx.api, "dave").login()
+    err_is_(dave.correct("h1", {"expected_revision": 1, "amount": 100,
+                                "effective_at": S(4000), "reason": "reduce"},
+                         key="ho1"),
             409, "historical_overdraft",
             "carol would go negative at h2's boundary (100-400)")
     eq(carol.me()["total"], 1100, "balances preserved")
     eq(len(carol.revisions("h1").json["revisions"]), 1, "revision history preserved")
     eq(carol.statement("known_at=2030-01-01T00:00:00%2B00:00")["closing_balance"],
        1100, "statements preserved")
-    ok = carol.correct("h1", {"expected_revision": 1, "amount": 450,
-                              "effective_at": S(4000), "reason": "small reduce"},
-                       key="ho2")
+    ok = dave.correct("h1", {"expected_revision": 1, "amount": 450,
+                             "effective_at": S(4000), "reason": "small reduce"},
+                      key="ho2")
     eq(ok.status, 201, "boundary stays >= 0 (450-400=50): accepted")
     eq(carol.me(f"as_of={S(3000)}")["balance"], 50, "boundary value exact")
     # R238: all movements landing on one instant are combined at that boundary
@@ -821,7 +822,7 @@ def capture_immutable_and_import_versions(ctx):
     ex = ctx.export()
     eq(ex["format_version"], 3, "stage-3 exports format_version 3 (A20)")
     st3 = ex["state"]
-    expect(all("base_balance" in u for u in st3["users"]),
+    expect(all("base_balance" in u for u in st3["users"].values()),
            "users carry base_balance")
     expect(all("revisions" in p for p in st3["payments"]),
            "payments carry revisions")
@@ -889,7 +890,7 @@ def me_historical_holds_lifecycle(ctx):
     eq(ada.me(f"as_of={c_auth}")["held"], 500, "hold starts at creation (inclusive)")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "just before creation nothing is held (R277)")
-    cap1 = bob.capture(aid, body={"amount": 200}, key="h-c1")
+    cap1 = bob.capture(aid, body={"amount": 200, "final": False}, key="h-c1")
     eq(cap1.status, 201, "nonfinal capture")
     c2 = cap1.json["created_at"]
     eq(ada.me(f"as_of={c2}")["held"], 300, "capture reduces the hold at capture time")
@@ -980,7 +981,7 @@ def seeded_holds_assumed_creation(ctx):
             fx_auth("a_closed", "u_cyd", "u_bob", 250, "captured", 7200,
                     created_at=S(3600))]))
     ada = User_(ctx.api, "ada").login()
-    eq(ada.me(f"as_of={S(3700)}")["held"], 300,
+    eq(ada.me(f"as_of={S(3500)}")["held"], 300,
        "supplied created_at: the open hold starts then (R286)")
     m = ada.me()
     eq(m["held"], 300, "closed seeded hold not held at now (R287)")
@@ -1000,7 +1001,7 @@ def statement_only_money_movements(ctx):
     aid = auth.json["authorization_id"]
     eq(len(ada.statement()["entries"]), n0,
        "authorization alone is not a statement entry (R288)")
-    cap = bob.capture(aid, body={"amount": 200}, key="s-c")
+    cap = bob.capture(aid, body={"amount": 200, "final": False}, key="s-c")
     eq(cap.status, 201, "nonfinal capture")
     eq(ada.void(aid).status, 200, "void the remainder")
     eq(len(ada.statement()["entries"]), n0 + 1,
@@ -1024,11 +1025,12 @@ def correction_vs_holds_overdraft_precedence(ctx):
         authorizations=[fx_auth("g_hold", "u_payer", "u_mer", 500, "open",
                                 7200, created_at=S(4000))]))
     payer = User_(ctx.api, "payer").login()
+    rich = User_(ctx.api, "rich").login()
     eq(payer.me()["held"], 500, "seeded hold active")
     eq(payer.me()["available"], 1000, "1500 - 500")
-    err_is_(payer.correct("g1", {"expected_revision": 1, "amount": 200,
-                                 "effective_at": S(5000), "reason": "reduce"},
-                          key="p1"),
+    err_is_(rich.correct("g1", {"expected_revision": 1, "amount": 200,
+                              "effective_at": S(5000), "reason": "reduce"},
+                       key="p1"),
             409, "historical_overdraft",
             "at the hold boundary available would be -300 (R284)")
     eq(payer.me()["available"], 1000, "state preserved")
@@ -1039,9 +1041,10 @@ def correction_vs_holds_overdraft_precedence(ctx):
         authorizations=[fx_auth("g_hold", "u_payer", "u_mer", 500, "open",
                                 7200, created_at=S(4000))]))
     payer = User_(ctx.api, "payer").login()
-    err_is_(payer.correct("g1", {"expected_revision": 1, "amount": 200,
-                                 "effective_at": S(5000), "reason": "reduce"},
-                          key="p2"),
+    rich = User_(ctx.api, "rich").login()
+    err_is_(rich.correct("g1", {"expected_revision": 1, "amount": 200,
+                              "effective_at": S(5000), "reason": "reduce"},
+                       key="p2"),
             409, "insufficient_funds",
             "current available (100) cannot cover the 400 debit (R285)")
 
@@ -1071,10 +1074,11 @@ def historical_total_follows_revisions(ctx):
         authorizations=[fx_auth("g_hold", "u_payer", "u_mer", 500, "open",
                                 7200, created_at=S(4000))]))
     payer = User_(ctx.api, "payer").login()
-    eq(ada_none := payer.me(f"as_of={S(60)}")["total"], 1500, "pre-correction total")
+    rich = User_(ctx.api, "rich").login()
+    eq(payer.me(f"as_of={S(60)}")["total"], 1500, "pre-correction total")
     eq(payer.me(f"as_of={S(60)}")["held"], 500, "hold present")
-    r = payer.correct("g1", {"expected_revision": 1, "amount": 700,
-                             "effective_at": S(5000), "reason": "up"}, key="t1")
+    r = rich.correct("g1", {"expected_revision": 1, "amount": 700,
+                            "effective_at": S(5000), "reason": "up"}, key="t1")
     eq(r.status, 201, f"correction: {r}")
     m = payer.me(f"as_of={S(60)}")
     eq(m["total"], 1600, "latest known revisions: 600->700 (+100)")
