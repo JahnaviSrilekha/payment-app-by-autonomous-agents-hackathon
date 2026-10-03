@@ -1837,17 +1837,22 @@ def batch_precedence_chain(ctx):
                          "amount": 1, "effective_at": S(60), "reason": "x"}],
                        key="pc2"), 404, "not_found",
             "item error precedes the operator 403 (A26)")
-    # phase 3 beats phase 4
-    s = ada.settle([{"from_handle": "ada", "to_handle": "cyd", "amount": 100}],
+    # phase 3 beats phase 4: a two-leg settlement, batch contains one leg
+    s = ada.settle([{"from_handle": "ada", "to_handle": "cyd", "amount": 100},
+                    {"from_handle": "bob", "to_handle": "cyd", "amount": 50}],
                    key="set1")
+    eq(s.status, 201, f"settlement: {s}")
     member = s.json["payments"][0]["payment_id"]
     err_is_(bob.cbatch([{"payment_id": member, "expected_revision": 1,
                          "amount": 50, "effective_at": S(60), "reason": "x"}],
                        key="pc3"), 403, "forbidden",
             "operator 403 precedes incomplete_settlement (A26)")
-    # phase 4 beats phase 5: incomplete AND unaffordable -> incomplete_settlement
-    cyd_holds = cyd.authorize("ada", 700, key="hold")
-    eq(cyd_holds.status, 201, "cyd available drops to 0")
+    # phase 4 beats phase 5: incomplete AND unaffordable -> incomplete_settlement.
+    # cyd's wallet after the settlement: 700+100+50 = 850; hold it all so any
+    # debit is unaffordable — the rejection below must be completeness, not money.
+    cyd_holds = cyd.authorize("ada", 850, key="hold")
+    eq(cyd_holds.status, 201, f"cyd available drained: {cyd_holds}")
+    eq(cyd.me()["available"], 0, "cyd available 0")
     err_is_(ada.cbatch([{"payment_id": member, "expected_revision": 1,
                          "amount": 50, "effective_at": S(60), "reason": "x"}],
                        key="pc4"), 422, "incomplete_settlement",
@@ -1933,13 +1938,19 @@ def batch_historical_overdraft_all_or_nothing(ctx):
           "effective_at": S(4000), "reason": "reduce a little"}
     r2 = {"payment_id": "h2", "expected_revision": 1, "amount": 310,
           "effective_at": S(3900), "reason": "reduce a little"}
-    # each alone is fine; combined, carol's mid boundary goes to 450+310-800
-    # = -40 while her current wallet only drops to 10 (phase 5 passes) (R320)
+    # each alone is fine (each in its own reset, so no probe inherits the
+    # previous probe's committed revision); combined, carol's mid boundary
+    # goes to 450+310-800 = -40 while her current wallet only drops to 10
+    # (phase 5 passes, phase 6 rejects) (R320)
+    ctx.reset(ho_fixture())
+    ada = User_(ctx.api, "ada").login()
     eq(ada.cbatch([r1], key="ho-a").status, 201,
        "item 1 alone: boundaries 450/950/150/200 all >= 0")
     time.sleep(1.1)  # SA-9
+    ctx.reset(ho_fixture())
+    ada = User_(ctx.api, "ada").login()
     eq(ada.cbatch([r2], key="ho-b").status, 201,
-       "item 2 alone: boundaries 500/810/10/60 all >= 0")
+       "item 2 alone from untouched history: boundaries 500/810/10/60 all >= 0")
     time.sleep(1.1)
     # fresh history for the combined rejection
     ctx.reset(ho_fixture())
@@ -1953,9 +1964,10 @@ def batch_historical_overdraft_all_or_nothing(ctx):
     eq([carol.me()["total"], dave.me()["total"]], before,
        "all-or-nothing: balances unchanged (R323)")
     ex = ctx.export()
-    eq([r_.get("correction_batch_id") for p in ex["state"]["payments"]
-        for r_ in p.get("revisions", [])],
-       [], "no revision carries correction_batch_id (R323)")
+    flags = [r_.get("correction_batch_id") for p in ex["state"]["payments"]
+             for r_ in p.get("revisions", [])]
+    expect(all(v is None for v in flags),
+           f"no revision carries correction_batch_id (R323): {flags}")
     eq(len(carol.revisions("h1").json["revisions"]), 1, "no revision appended (R323)")
     # the rejected key left no idempotency record: it can start fresh (R323)
     ok = ada.cbatch([dict(r1, amount=500, reason="noop")], key="ho-both")
