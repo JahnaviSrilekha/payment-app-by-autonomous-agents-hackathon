@@ -1131,7 +1131,7 @@ def import_replacement_and_validation(ctx):
     eq(User_login(ctx, "ada").me()["total"], 10000, "restored exactly")
     for bad, what in (
             ({**export, "track": "other"}, "wrong track"),
-            ({**export, "format_version": 3}, "future version"),
+            ({**export, "format_version": 4}, "future version"),
             ({**export, "state": {"users": "nope"}}, "invalid state"),
             ({k: v for k, v in export.items() if k != "state"}, "missing state")):
         err_is(ctx.api.post("/_test/import", body=bad, timeout=15), 422,

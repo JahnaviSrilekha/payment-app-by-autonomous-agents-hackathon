@@ -75,6 +75,7 @@ class API:
 
     def req(self, method, path, body=None, token=None, key=None,
             headers=None, timeout=10, raw=None):
+        path = path.replace(" ", "%20").replace("+", "%2B")
         h = dict(headers or {})
         data = None
         if raw is not None:
