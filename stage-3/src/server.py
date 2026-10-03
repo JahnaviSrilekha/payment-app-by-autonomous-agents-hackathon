@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth
 import authorizations
+import corrections
 import errors
 import idempotency
 import payments
@@ -249,6 +250,9 @@ def ep_me(ctx, user, service):
 
 route("POST", r"/payments", idempotent=True)(payments.create_payment)
 route("GET", r"/activity")(payments.activity)
+route("POST", r"/payments/(?P<payment_id>[^/]+)/corrections", idempotent=True)(
+    corrections.create_correction)
+route("GET", r"/payments/(?P<payment_id>[^/]+)/revisions")(corrections.list_revisions)
 route("POST", r"/requests", idempotent=True)(requests_endpoints.create_request)
 route("POST", r"/requests/(?P<id>[^/]+)/pay", idempotent=True)(requests_endpoints.pay_request)
 route("POST", r"/requests/(?P<id>[^/]+)/decline")(requests_endpoints.decline_request)
