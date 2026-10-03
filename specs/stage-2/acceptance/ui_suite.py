@@ -648,7 +648,13 @@ def ui_authorizations_screen(ctx):
     page.wait_for_timeout(500)
     eq(tid(page, "authorization-item-a_out").get_attribute("data-status"),
        "voided", "voided via UI")
-    eq(txt(page, "wallet-held"), "8.00 EUR", "held falls to the incoming hold")
+    # ada was the payer only of a_out: her held is now zero (R147/R187);
+    # the 8.00 remainder of a_in belongs to bob, the payer there
+    expect(tid(page, "wallet-held").count() == 0 or
+           not tid(page, "wallet-held").is_visible(),
+           "wallet-held absent when the payer holds nothing")
+    bob_after = ctx.person("bob", via_fixture=True)
+    eq(bob_after.me()["held"], 800, "the incoming hold sits on bob's wallet")
     assert_no_reload(page, "void from authorizations screen")
     # capture via UI with the pre-filled remainder
     tid(page, "authorization-capture-a_in").click()
@@ -669,6 +675,7 @@ def ui_authorizations_screen(ctx):
        "open", "refused capture changes nothing")
     # empty state for a user with no authorizations
     ctx.reset(fixture([fx_user("u_frank", "frank", 100)]))
+    login_ui(page, ctx, "frank")
     page.goto(ctx.base + "/authorizations")
     expect(tid(page, "empty-authorizations").is_visible(),
            "empty-authorizations shown when the list is empty")
@@ -699,10 +706,10 @@ def ui_authorize_form_errors(ctx):
     tid(page, "authorize-submit").click()
     tid(page, "authorize-error").wait_for(state="visible", timeout=8000)
     eq(ada.me()["held"], 0, "decimal-rule rejection sends no request")
-    tid(page, "authorize-amount").fill("100.5")
+    tid(page, "authorize-amount").fill("99.5")
     tid(page, "authorize-submit").click()
     page.wait_for_timeout(500)
-    eq(ada.me()["held"], 10050, "15.5-style decimal submits minor units (100.5->10050)")
+    eq(ada.me()["held"], 9950, "decimal input submits minor units (99.5 -> 9950)")
     # headline: available primary once holds exist
     page.goto(ctx.base + "/")
     fs_avail = tid(page, "wallet-available").evaluate(
