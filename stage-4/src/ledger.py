@@ -40,6 +40,15 @@ def revisions_of(payment):
     return [initial_revision(payment["amount"], payment["created_at"])]
 
 
+def refunded_total(service, payment_id):
+    """A22/R300: the cumulative refunded amount of one payment — the sum of the
+    `amount` field (refunds are immutable, R307, so a refund payment's creation
+    amount is its permanent amount — never a revision lookup) over every payment
+    whose `refund_of` names payment_id."""
+    return sum(p["amount"] for p in service["payments"]
+               if p.get("refund_of") == payment_id)
+
+
 def payments_touching(service, user_id):
     """Payments the user sent or received — no visibility filter (R213): the activity
     feed's visibility rules do not apply to money views."""

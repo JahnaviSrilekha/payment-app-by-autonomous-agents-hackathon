@@ -83,9 +83,9 @@ numbers only what stage 4 adds, continuing from R291/A21. Source: `we-are-devs/p
   the original body.
   > "Return 201 with that payment; replay returns 200 with the original body."
 
-- **R303** (behaviour, error). A refund moves existing money from the receiver's (of the
-  refund — i.e. the original payer's) available funds, or fails 409 `insufficient_funds`,
-  atomically.
+- **R303** (behaviour, error). A refund moves existing money from the receiver's (i.e. the
+  original receiver's — the caller issuing the refund, `target.to_user_id`) available
+  funds, or fails 409 `insufficient_funds`, atomically.
   > "It moves existing money from the receiver's available funds, or fails 409
   > `insufficient_funds`, atomically."
   AC: affordability is checked against `available(target.to_user_id)` (the refunder's
@@ -350,7 +350,13 @@ numbers only what stage 4 adds, continuing from R291/A21. Source: `we-are-devs/p
   `GET /payments/{id}/revisions`, R243). Import accepts `format_version` 1, 2, 3 or 4; for
   any version below 4, every payment defaults `refund_of = null` and every revision defaults
   `correction_batch_id = null` (the same defaulting pattern A20 already established for
-  `revisions`/`base_balance` on formats 1-2).
+  `revisions`/`base_balance` on formats 1-2). Two consequences of this assumption are
+  directly testable and are not independent requirements (tester's completeness review,
+  tagged `design-29`): the format-4 round trip (a stage-4 export, re-imported, preserves
+  every payment's `refund_of` and every revision's `correction_batch_id` exactly) and the
+  two per-field import validations design §29 adds — a non-null `refund_of` must name a
+  payment present in the same export (else 422 `validation_failed`, nothing imported) and a
+  present `correction_batch_id` must be a string or `null`.
 
 - **A29**. The closing sentence's "retaining settlement membership, corrections and
   snapshots" (R334) is read as "retaining whatever each earlier format already carries" —
