@@ -1167,6 +1167,256 @@
     }
   }
 
+
+  /* --- authorizations screen (T21, R188-R191) -------------------------------- */
+
+  function decimalString(minor, minorUnits) {
+    if (minorUnits === 0) {
+      return String(minor);
+    }
+    var scale = Math.pow(10, minorUnits);
+    return Math.floor(minor / scale) + "."
+      + String(minor % scale).padStart(minorUnits, "0");
+  }
+
+  function authorizationNode(authz, viewerHandle, cfg) {
+    var aid = authz.authorization_id;
+    var item = el("li", "row");
+    item.setAttribute("data-testid", "authorization-item-" + aid);
+    item.setAttribute("data-status", authz.status);
+    var main = el("div", "row-main");
+    var title = el("p", "row-title",
+      esc(authz.to_handle === viewerHandle ? "Incoming from " + authz.from_handle
+        : "Outgoing to " + authz.to_handle));
+    title.appendChild(el("span", "status-chip status-" + authz.status, authz.status));
+    main.appendChild(title);
+    var sub = el("p", "row-sub");
+    sub.appendChild(span("authorization-note-" + aid, authz.note || ""));
+    main.appendChild(sub);
+    var expires = el("p", "row-sub", "Expires ");
+    expires.appendChild(span("authorization-expires-" + aid, authz.expires_at));
+    main.appendChild(expires);
+    if (authz.status === "captured") {
+      var captured = el("p", "row-sub");
+      captured.appendChild(el("span", "muted", "Captured"));
+      var capturedValue = el("span", "",
+        formatAmount(authz.captured_amount, cfg.minor_units, cfg.currency));
+      capturedValue.setAttribute("data-testid", "authorization-captured-" + aid);
+      capturedValue.setAttribute("data-amount", String(authz.captured_amount));
+      captured.appendChild(capturedValue);
+      main.appendChild(captured);
+    }
+    item.appendChild(main);
+    var money = el("p", "row-money",
+      formatAmount(authz.amount, cfg.minor_units, cfg.currency));
+    money.setAttribute("data-testid", "authorization-amount-" + aid);
+    money.setAttribute("data-amount", String(authz.amount));
+    item.appendChild(money);
+    var actions = el("div");
+    if (authz.status === "open" && authz.to_handle === viewerHandle) {
+      var input = el("input", "input input-amount");
+      input.setAttribute("type", "text");
+      input.setAttribute("inputmode", "decimal");
+      input.setAttribute("data-testid", "authorization-capture-amount-" + aid);
+      input.setAttribute("aria-label", "Capture amount");
+      input.value = decimalString(authz.remaining_amount, cfg.minor_units);
+      actions.appendChild(input);
+      var capture = el("button", "button button-primary", "Capture");
+      capture.setAttribute("type", "button");
+      capture.setAttribute("data-testid", "authorization-capture-" + aid);
+      actions.appendChild(capture);
+    }
+    if (authz.status === "open" && authz.from_handle === viewerHandle) {
+      var voidBtn = el("button", "button button-danger", "Void");
+      voidBtn.setAttribute("type", "button");
+      voidBtn.setAttribute("data-testid", "authorization-void-" + aid);
+      actions.appendChild(voidBtn);
+    }
+    item.appendChild(actions);
+    return item;
+  }
+
+  function renderAuthorizations(authorizations, cfg) {
+    var host = fieldOf("authorization-list");
+    var emptyHost = fieldOf("empty-authorizations");
+    if (!host && !emptyHost) {
+      return;
+    }
+    if (!authorizations.length) {
+      if (host) {
+        host.remove();
+      }
+      if (!emptyHost) {
+        var empty = document.createElement("p");
+        empty.className = "empty";
+        empty.setAttribute("data-testid", "empty-authorizations");
+        empty.textContent = "No authorizations yet.";
+        document.querySelector("main").appendChild(empty);
+      }
+      return;
+    }
+    if (emptyHost) {
+      emptyHost.remove();
+    }
+    if (!host) {
+      host = document.createElement("ul");
+      host.className = "list";
+      host.setAttribute("data-testid", "authorization-list");
+      document.querySelector("main").appendChild(host);
+    }
+    while (host.firstChild) {
+      host.removeChild(host.firstChild);
+    }
+    authorizations.forEach(function (a) {
+      host.appendChild(authorizationNode(a, cfg.handle, cfg));
+    });
+  }
+
+  function initAuthorizations(boot) {
+    if (!boot.signed_in) {
+      return;
+    }
+    var guard = createRefreshGuard();
+    var cfg = boot;
+
+    async function refresh() {
+      var seq = guard.issue();
+      var results = await Promise.allSettled([
+        apiFetch("GET", "/me"),
+        apiFetch("GET", "/activity?limit=50"),
+        apiFetch("GET", "/authorizations?limit=50")
+      ]);
+      if (!guard.arrive(seq)) {
+        return;
+      }
+      if (results[0].status === "fulfilled" && results[0].value.status === 200) {
+        renderWallet(results[0].value.body);
+      }
+      if (results[1].status === "fulfilled" && results[1].value.status === 200) {
+        renderFeed(results[1].value.body.payments || [], cfg);
+      }
+      if (results[2].status === "fulfilled" && results[2].value.status === 200) {
+        renderAuthorizations(results[2].value.body.authorizations || [], cfg);
+      }
+    }
+
+    var form = document.getElementById("authorize-form");
+    var authorizeButton = form.querySelector('[data-testid="authorize-submit"]');
+    authorizeButton.addEventListener("click",
+      function () {
+        return withBusy(authorizeButton, async function () {
+          var values = {
+            to_handle: val("authorize-handle"),
+            amount: val("authorize-amount"),
+            note: val("authorize-note"),
+            visibility: val("authorize-visibility")
+          };
+          var parsed = parseDecimalAmount(values.amount, cfg.minor_units);
+          if (!parsed.ok) {
+            showMessage("authorize-error", "error", parsed.error); // R119: no request
+            return;
+          }
+          removeMessage("authorize-error");
+          var body = {
+            to_handle: values.to_handle,
+            amount: parsed.minor,
+            note: values.note,
+            visibility: values.visibility
+          };
+          var key = await deriveKey("authorize-form",
+            [values.to_handle, values.amount, values.note, values.visibility]);
+          var outcome;
+          try {
+            outcome = await apiFetch("POST", "/authorizations", body, key);
+          } catch (err) {
+            outcome = null;
+          }
+          if (outcome === null) {
+            showMessage("authorize-error", "uncertain",
+              "We couldn't confirm this authorization — press Authorize again to check.");
+            return;
+          }
+          if (classifyOutcome(outcome.status) !== "success") {
+            showMessage("authorize-error", "error",
+              errorMessage(outcome.body, "Authorization refused")); // incl. funds
+            await refresh();
+            return;
+          }
+          await refresh(); // wallet-held/available and the list update (R129/R191)
+        });
+      });
+
+    document.querySelector("main").addEventListener("click", function (event) {
+      var button = event.target.closest("button");
+      if (!button) {
+        return;
+      }
+      var testid = button.getAttribute("data-testid") || "";
+      var captureMatch = testid.match(/^authorization-capture-(.+)$/);
+      var voidMatch = testid.match(/^authorization-void-(.+)$/);
+      if (captureMatch) {
+        return withBusy(button, async function () {
+          var aid = captureMatch[1];
+          var input = fieldOf("authorization-capture-amount-" + aid);
+          var rawAmount = input ? input.value : "";
+          var parsed = parseDecimalAmount(rawAmount, cfg.minor_units);
+          if (!parsed.ok) {
+            showMessage("authorization-error", "error", parsed.error); // R119
+            return;
+          }
+          removeMessage("authorization-error");
+          var key = await deriveKey("authorization-capture", [aid, rawAmount]);
+          var outcome;
+          try {
+            outcome = await apiFetch("POST", "/authorizations/" + aid + "/capture",
+              { amount: parsed.minor }, key);
+          } catch (err) {
+            outcome = null;
+          }
+          if (outcome === null) {
+            showMessage("authorization-error", "uncertain",
+              "We couldn't confirm this capture — press Capture again to check.");
+            return;
+          }
+          if (classifyOutcome(outcome.status) !== "success") {
+            showMessage("authorization-error", "error",
+              errorMessage(outcome.body, "Capture refused"));
+            await refresh();
+            return;
+          }
+          await refresh(); // R168: the release is visible in the same step
+        });
+        return;
+      }
+      if (voidMatch) {
+        return withBusy(button, async function () {
+          var aid = voidMatch[1];
+          removeMessage("authorization-error");
+          var outcome;
+          try {
+            outcome = await apiFetch("POST", "/authorizations/" + aid + "/void");
+          } catch (err) {
+            outcome = null;
+          }
+          if (outcome === null) {
+            showMessage("authorization-error", "uncertain",
+              "We couldn't confirm this void — press Void again to check.");
+            return;
+          }
+          if (classifyOutcome(outcome.status) !== "success") {
+            showMessage("authorization-error", "error",
+              errorMessage(outcome.body, "Void refused")); // R178: closed holds
+            await refresh();
+            return;
+          }
+          await refresh();
+        });
+      }
+    });
+
+    refresh();
+  }
+
   return {
     parseDecimalAmount: parseDecimalAmount,
     formatAmount: formatAmount,
@@ -1190,6 +1440,8 @@
     initRequests: initRequests,
     renderSplitPreview: renderSplitPreview,
     parseHandles: parseHandles,
-    initSplit: initSplit
+    initSplit: initSplit,
+    renderAuthorizations: renderAuthorizations,
+    initAuthorizations: initAuthorizations
   };
 });

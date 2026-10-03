@@ -297,7 +297,36 @@ route("POST", r"/authorizations", idempotent=True)(authorizations.create_authori
 route("POST", r"/authorizations/(?P<id>[^/]+)/capture", idempotent=True)(
     authorizations.capture_authorization)
 route("POST", r"/authorizations/(?P<id>[^/]+)/void")(authorizations.void_authorization)
-route("GET", r"/authorizations")(authorizations.list_authorizations)
+@route("GET", r"/authorizations", public=True)
+def ep_authorizations_shared(ctx):
+    """R105/R184: the browser and the API share /authorizations. HTML for Accept:
+    text/html (cookie or bearer session), the batch-3 JSON list otherwise."""
+    if not ui.wants_html(ctx.headers):
+        with state_mod.STATE_LOCK:
+            user = auth.authenticate(ctx.headers)
+            return authorizations.list_authorizations(user=user, service=state_mod.get(),
+                                                      ctx=ctx)
+    with state_mod.STATE_LOCK:
+        service = state_mod.get()
+        user = cookie_user(ctx.headers)
+        if user is None:
+            try:
+                user = auth.authenticate(ctx.headers)
+            except errors.ApiError:
+                user = None
+        if user is None:
+            return 200, html_response(ui.authorizations_page(None, None, [], None))
+        me = auth.me_response(user)
+        now = state_mod.now_utc()
+        me["total"] = user["balance"]
+        me["held"] = state_mod.held(user["id"], service, now)
+        me["available"] = state_mod.available(user["id"], service, now)
+        feed = [payments.payment_response(service, p)
+                for p in reversed(service["payments"])
+                if payments.visible_to(p, user["id"])][:50]
+        listed = authorizations.list_authorizations(user=user, service=service, ctx=ctx)
+        rows = [row for row in listed[1]["authorizations"]]
+        return 200, html_response(ui.authorizations_page(user, me, feed, rows))
 
 
 # --- browser screens (design.md section 14; HTML only when Accept: text/html) -----

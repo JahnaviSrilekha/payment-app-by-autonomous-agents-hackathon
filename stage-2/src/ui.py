@@ -462,3 +462,125 @@ def split_page(user, minor_units, currency, boot_extra=None):
         % (inputs, error_banner("split-error"), submit_button("split-submit", "Split"))
     )
     return page("Split", body, active="/split", user=user, boot=boot)
+
+
+# --- authorizations screen (T21, R104/R105/R184/R188-R191) -------------------------
+
+
+def authorize_form():
+    """R188: same input rules as the pay form (decimal input, public/private select)."""
+    visibility = (
+        '<select class="select" id="authorize-visibility" name="authorize-visibility"'
+        ' data-testid="authorize-visibility">'
+        '<option value="public">Public</option>'
+        '<option value="private">Private</option></select>'
+    )
+    inputs = (
+        field("authorize-handle", "To (handle)",
+              text_input("authorize-handle", placeholder="bob", required=True))
+        + field("authorize-amount", "Amount to hold",
+                text_input("authorize-amount", value="20.00", inputmode="decimal",
+                           placeholder="20.00", required=True),
+              "Decimal amount, e.g. 20.00")
+        + field("authorize-note", "Note (optional)",
+                text_input("authorize-note", placeholder="deposit"))
+        + field("authorize-visibility", "Visibility", visibility)
+    )
+    return (
+        '<section class="card"><h2 class="card-title">Authorize a payment</h2>'
+        "<p class=\"muted\">Reserve money for someone to collect later. Capturing "
+        "moves it; the hold releases on its own when it expires.</p>"
+        '<form class="form" id="authorize-form" novalidate>%s%s%s</form></section>'
+        % (inputs, error_banner("authorize-error"),
+           submit_button("authorize-submit", "Authorize"))
+    )
+
+
+def authorization_row(authz, minor_units, currency, viewer_id):
+    """R189/R190: capture controls only on an incoming open hold, void only on an
+    outgoing open hold, captured-amount only when status is captured. Status is the
+    effective (lazy-expiry) status. The capture input is pre-filled with the live
+    remaining amount as a decimal string."""
+    aid = authz["authorization_id"]
+    status = authz["status"]
+    incoming = authz["to_user_id"] == viewer_id
+    outgoing = authz["from_user_id"] == viewer_id
+    direction = "Incoming" if incoming else ("Outgoing" if outgoing else "Related")
+    other = authz["to_handle"] if outgoing else authz["from_handle"]
+    actions = ""
+    if incoming and status == "open":
+        remaining = authz["remaining_amount"]
+        minor_units_div = 10 ** minor_units
+        whole, frac = divmod(remaining, minor_units_div)
+        if minor_units == 0:
+            remaining_text = str(remaining)
+        else:
+            remaining_text = "%d.%0*d" % (whole, minor_units, frac)
+        actions += (
+            '<input class="input input-amount" id="authorization-capture-amount-%s"'
+            ' data-testid="authorization-capture-amount-%s" inputmode="decimal"'
+            ' value="%s" aria-label="Capture amount">'
+            % (aid, aid, esc(remaining_text))
+        )
+        actions += (
+            '<button type="button" class="button button-primary"'
+            ' data-testid="authorization-capture-%s">Capture</button>' % aid
+        )
+    if outgoing and status == "open":
+        actions += (
+            '<button type="button" class="button button-danger"'
+            ' data-testid="authorization-void-%s">Void</button>' % aid
+        )
+    captured_html = ""
+    if status == "captured":
+        captured_html = (
+            '<p class="row-sub"><span class="muted">Captured</span> '
+            '<span data-testid="authorization-captured-%s" data-amount="%d">%s</span></p>'
+            % (aid, authz["captured_amount"],
+               esc(format_amount(authz["captured_amount"], minor_units, currency)))
+        )
+    return (
+        '<li class="row" data-testid="authorization-item-%s" data-status="%s">'
+        '<div class="row-main"><p class="row-title">%s %s'
+        ' <span class="status-chip status-%s">%s</span></p>'
+        '<p class="row-sub"><span data-testid="authorization-note-%s">%s</span></p>'
+        '<p class="row-sub">Expires <span data-testid="authorization-expires-%s">'
+        "%s</span></p>%s</div>"
+        '<p class="row-money" data-testid="authorization-amount-%s" data-amount="%d">'
+        "%s</p><div>%s</div></li>"
+        % (aid, status, esc(direction), esc(other), status, esc(status), aid,
+           esc(authz["note"] or ""), aid, esc(authz["expires_at"]), captured_html,
+           aid, authz["amount"],
+           esc(format_amount(authz["amount"], minor_units, currency)), actions)
+    )
+
+
+def authorizations_section(authorizations, minor_units, currency, viewer_id):
+    if not authorizations:
+        return ('<p class="empty" data-testid="empty-authorizations">'
+                "No authorizations yet. Reserve funds with the form above.</p>")
+    rows = "".join(authorization_row(a, minor_units, currency, viewer_id)
+                   for a in authorizations)
+    return '<ul class="list" data-testid="authorization-list">%s</ul>' % rows
+
+
+def authorizations_page(user, me, payments, authorizations, boot_extra=None):
+    if user is None:
+        return page("Authorisations", signed_out_home(),
+                    active="/authorizations", boot={
+                        "screen": "authorizations", "signed_in": False})
+    boot = {"screen": "authorizations", "signed_in": True,
+            "handle": user["handle"], "minor_units": me["minor_units"],
+            "currency": me["currency"]}
+    if boot_extra:
+        boot.update(boot_extra)
+    body = (
+        wallet_section(me)
+        + authorize_form()
+        + '<section class="card"><h2 class="card-title">Authorizations</h2>'
+        + authorizations_section(authorizations, me["minor_units"],
+                                 me["currency"], user["id"])
+        + "</section>"
+        + activity_section(payments, me["minor_units"], me["currency"])
+    )
+    return page("Authorisations", body, active="/authorizations", user=user, boot=boot)

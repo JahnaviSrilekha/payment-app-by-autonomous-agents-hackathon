@@ -193,8 +193,15 @@ def build_from_fixture(fixture):
             state_mod.parse_rfc3339(authorization["expires_at"])
         except ValueError:
             raise errors.validation_failed("expires_at must be an RFC 3339 timestamp")
-        captured_amount = state_mod.parse_amount(authorization.get("captured_amount", 0),
-                                                 "captured_amount")
+        if "captured_amount" in authorization:
+            captured_amount = state_mod.parse_amount(authorization["captured_amount"],
+                                                     "captured_amount")
+        elif status == "captured":
+            # R153 lists no captured_amount for seeded entries: a seeded captured
+            # authorization represents a completed full capture of its amount
+            captured_amount = amount
+        else:
+            captured_amount = 0
         if captured_amount < 0 or captured_amount > amount:
             raise errors.validation_failed(
                 "captured_amount must be between 0 and the authorized amount")

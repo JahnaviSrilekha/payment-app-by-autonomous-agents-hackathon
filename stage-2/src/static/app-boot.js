@@ -11,7 +11,8 @@
   var inits = {
     home: Pebble.initHome,
     requests: Pebble.initRequests,
-    split: Pebble.initSplit
+    split: Pebble.initSplit,
+    authorizations: Pebble.initAuthorizations
   };
   var init = inits[boot.screen];
   if (typeof init === "function") {
