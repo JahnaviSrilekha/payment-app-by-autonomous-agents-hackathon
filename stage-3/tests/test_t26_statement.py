@@ -75,8 +75,10 @@ class TestT26Statement(unittest.TestCase):
         """R205/R207/R208: defaults cover the whole wallet; ada's replay is opening
         10600 -> +200 -> -500 -> -300 -> closing 10000, oldest first."""
         s = self.get(self.ada)
+        # R208's shape; R260 (batch task T27) adds the opaque snapshot token to
+        # every fresh response.
         self.assertEqual(set(s), {"opening_balance", "entries", "closing_balance",
-                                  "has_more"})
+                                  "has_more", "snapshot"})
         self.assertEqual(s["opening_balance"], 10600)
         self.assertEqual(s["closing_balance"], 10000)
         self.assertEqual([(e["payment"]["payment_id"], e["delta"], e["balance_after"])
