@@ -1,14 +1,18 @@
 """T31: refunds — POST /payments/{payment_id}/refunds (R294-R305, R332; design
 section 26, A21). Every error is independently triggerable, in A21's order; a refund
 is an ordinary opposite-direction payment (ADR-008) and leaves every linked object
-untouched (R304, R332)."""
+untouched (R304, R332). T35's concurrency/money-invariant tests for refunds (R300,
+R303: identical-key replay under load, conservation across refund chains at every
+as_of/known_at) live here too."""
 
 import sys
 import unittest
+from datetime import timedelta
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 import util  # noqa: E402
+import state as state_mod  # noqa: E402
 
 T0 = "2026-01-01T10:00:00+00:00"
 T1 = "2026-01-01T11:00:00+00:00"
@@ -341,6 +345,58 @@ class TestT31Refunds(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(self.me(self.ada)["total"] + self.me(self.bob)["total"]
                          + self.me(self.carol)["total"], expected)
+
+
+    def test_concurrent_identical_key_refunds_exactly_once(self):
+        """T35/R300/R303 under load: two racing refunds with the same key and body
+        give exactly one 201 and one 200-replay, the money moves once, and both
+        callers see the same payment id."""
+        results = util.concurrent(2, lambda i: refund(
+            self.client, self.bob, "p_1", {"amount": 2000}, key="r-race"))
+        statuses = sorted(r[0] for r in results)
+        self.assertEqual(statuses, [200, 201])
+        self.assertEqual(results[0][1]["payment_id"], results[1][1]["payment_id"])
+        self.assertEqual(self.me(self.bob)["total"], 8500 - 2000)
+        self.assertEqual(self.me(self.ada)["total"], 10000 + 2000)
+        refunded = [p for p in self.client.request("GET", "/activity",
+                                                   token=self.ada)[1]["payments"]
+                    if p["refund_of"] == "p_1"]
+        self.assertEqual(len(refunded), 1)
+
+    def test_refund_chain_never_negative_available_at_any_instant(self):
+        """T35/R303: payment -> refund -> correction near the refunded boundary —
+        at every (as_of, known_at) combination the response's available (total
+        minus held) stays nonnegative for both parties."""
+        util.reset(self.client, refunds_fixture())
+        self.ada = login(self.client, "ada@example.com")
+        self.bob = login(self.client, "bob@example.com")
+        _, refund_response, _ = refund(self.client, self.bob, "p_1",
+                                       {"amount": 2000}, key="r-chain")
+        status, _, _ = self.client.request(
+            "POST", "/payments/p_1/corrections",
+            {"expected_revision": 1, "amount": 2000, "reason": "down to refunds",
+             "effective_at": T1}, token=self.ada, key="c-chain")
+        self.assertEqual(status, 201)
+        refund_at = state_mod.parse_rfc3339(refund_response["created_at"])
+        grid = {
+            T0, T1,
+            "2020-01-01T00:00:00Z",  # before everything: base balances only
+            "2099-01-01T00:00:00Z",  # after everything
+            refund_response["created_at"],
+            (refund_at - timedelta(seconds=1)).isoformat(),
+        }
+        for as_of in grid:
+            for known_at in grid | {None}:
+                query = "?as_of=%s" % as_of.replace("+", "%2B")
+                if known_at is not None:
+                    query += "&known_at=%s" % known_at.replace("+", "%2B")
+                for token in (self.ada, self.bob):
+                    status, me, _ = self.client.request("GET", "/me" + query,
+                                                        token=token)
+                    self.assertEqual(status, 200, (as_of, known_at))
+                    self.assertGreaterEqual(me["available"], 0, (as_of, known_at))
+                    self.assertGreaterEqual(me["total"], 0, (as_of, known_at))
+                    self.assertEqual(me["available"], me["total"] - me["held"])
 
 
 if __name__ == "__main__":

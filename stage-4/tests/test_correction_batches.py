@@ -4,6 +4,7 @@ combined affordability, combined historical sweep with all tentatives popped on
 failure, one shared recorded_at and one correction_batch_id on success."""
 
 import sys
+import threading
 import unittest
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -49,6 +50,11 @@ def login(client, email):
 
 def batch(client, token, corrections, key):
     return client.request("POST", "/correction-batches", {"corrections": corrections},
+                          token=token, key=key)
+
+
+def correct(client, token, payment_id, body, key):
+    return client.request("POST", "/payments/%s/corrections" % payment_id, body,
                           token=token, key=key)
 
 
@@ -396,36 +402,133 @@ class TestT33CorrectionBatches(unittest.TestCase):
         self.assertEqual(status, 201, payload)
 
 
-def test_batch_id_exposed_through_revisions_and_single_correction(self):
-        """R325's AC (regression for the reviewer's reject): every revision exposes
-        correction_batch_id — null on revision 1 and on single-correction-created
-        revisions (both in the single endpoint's 201 response and through
-        GET /payments/{id}/revisions), the batch's own id on batch-created ones."""
-        util.reset(self.client, batch_fixture())
-        self.ada = login(self.client, "ada@example.com")
-        # a single correction first: null everywhere it is exposed
-        _, single, _ = self.client.request(
-            "POST", "/payments/p_1/corrections",
-            {"expected_revision": 1, "amount": 6100, "reason": "single",
-             "effective_at": T2}, token=self.ada, key="c-exp")
-        self.assertIsNone(single["correction_batch_id"])
+    def test_batch_id_exposed_through_revisions_and_single_correction(self):
+            """R325's AC (regression for the reviewer's reject): every revision exposes
+            correction_batch_id — null on revision 1 and on single-correction-created
+            revisions (both in the single endpoint's 201 response and through
+            GET /payments/{id}/revisions), the batch's own id on batch-created ones."""
+            util.reset(self.client, batch_fixture())
+            self.ada = login(self.client, "ada@example.com")
+            # a single correction first: null everywhere it is exposed
+            _, single, _ = self.client.request(
+                "POST", "/payments/p_1/corrections",
+                {"expected_revision": 1, "amount": 6100, "reason": "single",
+                 "effective_at": T2}, token=self.ada, key="c-exp")
+            self.assertIsNone(single["correction_batch_id"])
+            rows = self.client.request("GET", "/payments/p_1/revisions",
+                                       token=self.ada)[1]["revisions"]
+            self.assertTrue(all(r["correction_batch_id"] is None for r in rows))
+            # then a batch correction of the same payment: the batch id everywhere
+            _, batch_response, _ = batch(self.client, self.ada,
+                                         [item("p_1", 6200, expected_revision=2)],
+                                         key="b-exp")
+            batch_id = batch_response["correction_batch_id"]
+            self.assertEqual(batch_response["revisions"][0]["correction_batch_id"],
+                             batch_id)
+            rows = self.client.request("GET", "/payments/p_1/revisions",
+                                       token=self.ada)[1]["revisions"]
+            self.assertEqual([r["revision"] for r in rows], [1, 2, 3])
+            self.assertIsNone(rows[0]["correction_batch_id"])
+            self.assertIsNone(rows[1]["correction_batch_id"])
+            self.assertEqual(rows[2]["correction_batch_id"], batch_id)
+            self.assertEqual(rows[2]["recorded_at"], batch_response["recorded_at"])
+
+    def test_concurrent_shared_expected_revision_single_single(self):
+        """T35/R333: two concurrent single corrections sharing p_1's current
+        expected_revision — at most one commits, the loser observes the post-commit
+        revision count and gets 409 stale_revision, no partial state."""
+        results = util.concurrent(2, lambda i: correct(
+            self.client, self.ada, "p_1",
+            {"expected_revision": 1, "amount": 6100 + 100 * i, "reason": "race",
+             "effective_at": T2}, key="cc-ss-%d" % i))
+        self._assert_exactly_one_committed(results)
         rows = self.client.request("GET", "/payments/p_1/revisions",
                                    token=self.ada)[1]["revisions"]
-        self.assertTrue(all(r["correction_batch_id"] is None for r in rows))
-        # then a batch correction of the same payment: the batch id everywhere
-        _, batch_response, _ = batch(self.client, self.ada,
-                                     [item("p_1", 6200, expected_revision=2)],
-                                     key="b-exp")
-        batch_id = batch_response["correction_batch_id"]
-        self.assertEqual(batch_response["revisions"][0]["correction_batch_id"],
-                         batch_id)
+        self.assertEqual([r["revision"] for r in rows], [1, 2])
+        self._assert_seed_total()
+
+    def test_concurrent_shared_expected_revision_single_batch(self):
+        """T35/R333: a single correction and a batch item racing on the same
+        payment's expected_revision — exactly one commits."""
+        def single(_):
+            return correct(self.client, self.ada, "p_1",
+                           {"expected_revision": 1, "amount": 6100,
+                            "reason": "single", "effective_at": T2},
+                           key="cc-sb-single")
+
+        def batched(_):
+            return batch(self.client, self.ada,
+                         [item("p_1", 6200, expected_revision=1)],
+                         key="cc-sb-batch")
+
+        results = util.concurrent(2, lambda i: single(i) if i == 0 else batched(i))
+        self._assert_exactly_one_committed(results)
         rows = self.client.request("GET", "/payments/p_1/revisions",
                                    token=self.ada)[1]["revisions"]
-        self.assertEqual([r["revision"] for r in rows], [1, 2, 3])
-        self.assertIsNone(rows[0]["correction_batch_id"])
-        self.assertIsNone(rows[1]["correction_batch_id"])
-        self.assertEqual(rows[2]["correction_batch_id"], batch_id)
-        self.assertEqual(rows[2]["recorded_at"], batch_response["recorded_at"])
+        self.assertEqual([r["revision"] for r in rows], [1, 2])
+        self._assert_seed_total()
+
+    def test_concurrent_shared_expected_revision_batch_batch(self):
+        """T35/R333: two batches racing an item on the same payment's
+        expected_revision — one 201, one 409 stale_revision (first failing item
+        wins), no partial state from either."""
+        results = util.concurrent(2, lambda i: batch(
+            self.client, self.ada,
+            [item("p_1", 6100 + 100 * i, expected_revision=1)],
+            key="cc-bb-%d" % i))
+        self._assert_exactly_one_committed(results)
+        rows = self.client.request("GET", "/payments/p_1/revisions",
+                                   token=self.ada)[1]["revisions"]
+        self.assertEqual([r["revision"] for r in rows], [1, 2])
+        self._assert_seed_total()
+
+    def _assert_exactly_one_committed(self, results):
+        created = [r for r in results if r[0] == 201]
+        stale = [r for r in results if r[0] == 409
+                 and r[1]["error"]["code"] == "stale_revision"]
+        self.assertEqual(len(created), 1, results)
+        self.assertEqual(len(stale), len(results) - 1, results)
+
+    def _assert_seed_total(self):
+        me_ada = self.client.request("GET", "/me", token=self.ada)[1]
+        me_bob = self.client.request("GET", "/me", token=self.bob)[1]
+        me_carol = self.client.request("GET", "/me", token=self.carol)[1]
+        self.assertEqual(me_ada["total"] + me_bob["total"] + me_carol["total"],
+                         33000)
+
+    def test_rejected_batches_under_load_leave_no_partial_state(self):
+        """T35/R322/R323: batches racing under load — at most one can ever commit
+        (shared expected_revision), the rest reject with stale_revision or
+        insufficient_funds, and every concurrent reader always observes the seed
+        total (no batch is ever partially applied)."""
+        results = util.concurrent(20, self._racing_batch)
+        for status, payload, _ in results:
+            self.assertIn(status, (201, 409), payload)
+            if status == 409:
+                self.assertIn(payload["error"]["code"],
+                              ("stale_revision", "insufficient_funds"))
+        self.assertLessEqual(len([r for r in results if r[0] == 201]), 1)
+        self._assert_seed_total()
+        rows = self.client.request("GET", "/payments/p_1/revisions",
+                                   token=self.ada)[1]["revisions"]
+        self.assertIn(len(rows), (1, 2))
+
+    def _racing_batch(self, i):
+        if i % 5 == 4:
+            # would overdraw ada's combined net even alone: insufficient_funds
+            corrections = [item("p_1", 50000, expected_revision=1),
+                           item("p_2", 50000, expected_revision=1)]
+        else:
+            corrections = [item("p_1", 6100, expected_revision=1),
+                           item("p_2", 6100, expected_revision=1)]
+        status, payload, _ = batch(self.client, self.ada, corrections,
+                                   key="b-load-%d" % i)
+        me_ada = self.client.request("GET", "/me", token=self.ada)[1]
+        me_bob = self.client.request("GET", "/me", token=self.bob)[1]
+        me_carol = self.client.request("GET", "/me", token=self.carol)[1]
+        if me_ada["total"] + me_bob["total"] + me_carol["total"] != 33000:
+            return (418, {"error": {"code": "conservation_violated"}}, None)
+        return (status, payload, None)
 
 
 if __name__ == "__main__":
