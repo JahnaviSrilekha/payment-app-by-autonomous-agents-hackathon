@@ -1,14 +1,18 @@
 """POST /payments/{payment_id}/corrections (idempotent write path 8) and
 GET /payments/{payment_id}/revisions (stage-3 spec sections D-I; R219-R245, R272,
-R275, R283-R285; design section 19, ADR-006).
+R275, R283-R285; design section 19, ADR-006). Stage 4 extends the per-item checks
+with R307's refund disjunct and R308's refund_exceeds_payment, factored into
+validate_item (design section 28 phase 2, ADR-009).
 
 A correction appends an immutable revision to the payment's history and moves only
 the difference between the two wallets, in the same critical section (R234). The
 original payment, its original idempotent response and the activity feed are never
-touched (R241, R242). Error precedence is A15's: payment lookup (404) -> sender
-check (403) -> field validation (422) -> structural immutability (422
-linked_payment_immutable) -> stale_revision (409) -> insufficient_funds (409) ->
-historical_overdraft (409, explicit spec order, R236-R237/R285/R284).
+touched (R241, R242). Error precedence is A15's, extended by A24/A25: payment
+lookup (404) -> sender check (403) -> field validation (422) -> structural
+immutability (422 linked_payment_immutable, settlement members/captures/refunds)
+-> refund_exceeds_payment (422) -> stale_revision (409) -> effective_at not later
+than now (422) -> insufficient_funds (409) -> historical_overdraft (409, explicit
+spec order, R236-R237/R285/R284).
 
 The historical-overdraft sweep evaluates a tentative world in which the new revision
 is already appended: the append happens under STATE_LOCK and is popped again on any
@@ -69,69 +73,103 @@ def _find(service, payment_id):
     return None
 
 
-def create_correction(ctx, user, service):
-    """POST /payments/{payment_id}/corrections — design section 19's step 6
-    (field/business validation) and step 7 (commit), after idempotency-key
-    resolution (replay/reuse handled by the shared pipeline)."""
-    payment = _find(service, ctx.params.get("payment_id"))
+def validate_item(service, payment_id, body, now, allow_settlement=False):
+    """The per-item correction checks (design section 28 phase 2 / A26), shared by
+    the single-correction endpoint and the batch endpoint so the two paths can
+    never diverge (ADR-009): payment lookup (404) -> field shape (422) ->
+    linked_payment_immutable (422) -> refund_exceeds_payment (422) ->
+    stale_revision (409) -> effective_at not later than now (422). Returns
+    (payment, amount, delta, effective_raw) on success; raises errors.ApiError
+    otherwise, with no state change.
+
+    allow_settlement=False keeps R307's settlement-member disjunct for the single
+    endpoint (A24); the batch endpoint is the only path that may correct a
+    settlement member (R315/R316), so it passes allow_settlement=True and the
+    check reduces to captures and refunds."""
+    payment = _find(service, payment_id)
     if payment is None:
         raise errors.not_found("no such payment")  # R221
-    if payment["from_user_id"] != user["id"]:
-        raise errors.forbidden(  # R220: only the original sender
-            "only the original sender may correct a payment")
     # R222-R227: field shapes, in the body's own order.
-    if "expected_revision" not in ctx.parsed:
+    if "expected_revision" not in body:
         raise errors.validation_failed("expected_revision is required")
-    expected_revision = state_mod.parse_amount(ctx.parsed["expected_revision"],
+    expected_revision = state_mod.parse_amount(body["expected_revision"],
                                                "expected_revision")
     if expected_revision < 1:
         raise errors.validation_failed(
             "expected_revision must be a positive integer")
-    if "amount" not in ctx.parsed:
+    if "amount" not in body:
         raise errors.validation_failed("amount is required")
-    amount = state_mod.parse_amount(ctx.parsed["amount"])
+    amount = state_mod.parse_amount(body["amount"])
     if amount < 0 or amount > MAX_AMOUNT:
         raise errors.validation_failed(
             "amount must be between 0 and %d" % MAX_AMOUNT)
     # R225/R226 have endpoint-specific rules, so a wrong JSON type is that
     # endpoint's 422, never the generic 400 (SA-8, stage-1 design section 9 step
     # 4's rule) — get_string would give 400, so the type is checked here.
-    if "reason" not in ctx.parsed:
+    if "reason" not in body:
         raise errors.validation_failed("reason is required")
-    if not isinstance(ctx.parsed["reason"], str):
+    if not isinstance(body["reason"], str):
         raise errors.validation_failed("reason must be a string")
-    reason = ctx.parsed["reason"]
+    reason = body["reason"]
     if not 1 <= len(reason) <= REASON_MAX:
         raise errors.validation_failed(
             "reason must be %d..%d characters" % (1, REASON_MAX))
-    if "effective_at" not in ctx.parsed:
+    if "effective_at" not in body:
         raise errors.validation_failed("effective_at is required")
-    if not isinstance(ctx.parsed["effective_at"], str):
+    if not isinstance(body["effective_at"], str):
         raise errors.validation_failed(
             "effective_at must be an RFC 3339 timestamp")
-    effective_raw = ctx.parsed["effective_at"]
+    effective_raw = body["effective_at"]
     try:
         effective_at = state_mod.parse_rfc3339(effective_raw)
     except ValueError:
         raise errors.validation_failed(
             "effective_at must be an RFC 3339 timestamp")
-    now = state_mod.now_utc()
-    if effective_at > now:
-        raise errors.validation_failed(  # R226
-            "effective_at must not be later than now")
-    # R272/R275: settlement members and captures are immutable linked payments.
-    if payment.get("settlement_id") is not None \
-            or payment.get("authorization_id") is not None:
+    # R272/R275/R307: settlement members (single endpoint only, A24), captures
+    # and refunds are immutable linked payments.
+    if (payment.get("settlement_id") is not None and not allow_settlement) \
+            or payment.get("authorization_id") is not None \
+            or payment.get("refund_of") is not None:
         raise errors.ApiError(422, "linked_payment_immutable",
-                              "linked payments (settlement members and captures) "
-                              "cannot be corrected")
+                              "linked payments (settlement members, captures and "
+                              "refunds) cannot be corrected")
+    # R308/A25: a correction cannot reduce a payment below its already-refunded
+    # amount — the requested amount (the new total) against refunded_total, a
+    # 422 checked immediately after the structural immutability check and before
+    # the caller-supplied expected_revision (A25's 422-before-409 bucket).
+    if amount < ledger.refunded_total(service, payment["id"]):
+        raise errors.ApiError(422, "refund_exceeds_payment",
+                              "correction would reduce the payment below its "
+                              "already-refunded amount")
     # R231: staleness against the live revision history.
     if expected_revision != len(payment["revisions"]):
         raise errors.conflict("stale_revision",
                               "expected_revision %d, current revision %d"
                               % (expected_revision, len(payment["revisions"])))
+    if effective_at > now:
+        raise errors.validation_failed(  # R226/R326
+            "effective_at must not be later than now")
     previous_amount = payment["revisions"][-1]["amount"]
     delta = amount - previous_amount
+    return payment, amount, delta, effective_raw
+
+
+def create_correction(ctx, user, service):
+    """POST /payments/{payment_id}/corrections — design section 19's step 6
+    (field/business validation) and step 7 (commit), after idempotency-key
+    resolution (replay/reuse handled by the shared pipeline). The per-item
+    checks are corrections.validate_item (ADR-009: one implementation, shared
+    with the batch endpoint's phase 2)."""
+    payment = _find(service, ctx.params.get("payment_id"))
+    if payment is None:
+        raise errors.not_found("no such payment")  # R221
+    if payment["from_user_id"] != user["id"]:
+        raise errors.forbidden(  # R220: only the original sender
+            "only the original sender may correct a payment")
+    now = state_mod.now_utc()
+    payment, amount, delta, effective_raw = validate_item(
+        service, ctx.params.get("payment_id"), ctx.parsed, now)
+    reason = ctx.parsed["reason"]
     # R236/R285: a currently unaffordable debit is insufficient_funds, checked
     # before the historical sweep (A15's explicit order). The debtor is the original
     # sender for an increase, the original receiver for a decrease (R235).
