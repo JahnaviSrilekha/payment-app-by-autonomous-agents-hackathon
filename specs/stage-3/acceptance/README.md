@@ -103,12 +103,12 @@ earlier stages. `COVERAGE.md` is the committed requirement-id → test table.
 - **SA-7.** A correction restating the current amount is valid and appends a
   revision without moving money (design §19 step 6); tagged `design-19`,
   excluded from requirement coverage.
-- **SA-8.** A wrong JSON *type* in a correction body (`expected_revision`
-  `"1"`/`1.5`, `amount` `"5"`/`1.5`, `reason` `7`) is asserted as 400
-  `malformed_request` OR 422 `validation_failed`: carried R43 reserves 400
-  for wrong field types while the stage-3 correction contract (R222-R227)
-  says invalid input is 422. Wrong *values* (right type) are strictly 422.
-  The ambiguity is flagged to @coordinator for adjudication.
+- **SA-8.** A wrong JSON *type* in a correction body is asserted as strict
+  422 `validation_failed` — adjudicated by @coordinator per stage-1 design
+  §9 step 4: every correction field has an endpoint-specific rule
+  (R223-R226), so wrong-type values take the endpoint's 422 code, never the
+  generic 400 `malformed_request` (R43's reservation applies only where no
+  endpoint-specific rule exists).
 - **SA-9.** A write landing in the same second as a subsequent
   selection-based read (statement/`as_of` with `known_at` omitted) can
   under-select for up to ~1s: probed evidence shows a revision recorded at

@@ -325,21 +325,17 @@ def corrections_body_validation(ctx):
     for i, (what, body) in enumerate(cases):
         err_is_(ada.correct("p1", body, key=f"bad-{i}"), 422, "validation_failed",
                 what)
-    # Wrong JSON *type*: carried R43 reserves 400 malformed_request for wrong
-    # field types, while the stage-3 correction contract (R222-R227) says
-    # invalid input is 422. Both readings are defensible (SA-8), so assert a
-    # 4xx with either code, never 2xx/5xx.
+    # Wrong JSON *type*: adjudicated (stage-1 design §9 step 4) — every
+    # correction field has an endpoint-specific rule (R223-226), so a
+    # wrong-type value is always 422 validation_failed, never 400.
     for i, (what, body) in enumerate([
             ("expected_revision='1'", dict(base, expected_revision="1")),
             ("expected_revision=1.5", dict(base, expected_revision=1.5)),
             ("amount='5'", dict(base, amount="5")),
             ("amount=1.5", dict(base, amount=1.5)),
             ("reason=7", dict(base, reason=7))]):
-        r = ada.correct("p1", body, key=f"badtype-{i}")
-        expect(r.status in (400, 422) and
-               r.err_code() in ("malformed_request", "validation_failed"),
-               f"{what}: expected 400 malformed_request or 422 validation_failed, "
-               f"got {r}")
+        err_is_(ada.correct("p1", body, key=f"badtype-{i}"), 422,
+                "validation_failed", what)
     ok = ada.correct("p1", {"expected_revision": 1, "amount": 1400,
                             "effective_at": S(5000), "reason": "x" * 200,
                             "junk_field": 1}, key="ok-bounds")
@@ -939,6 +935,9 @@ def me_historical_holds_lifecycle(ctx):
     eq(ada.me(f"as_of={c_auth}&known_at={c2}")["held"], 500,
        "capture known but as_of still before the event: the reduction happens "
        "at capture time (R277); known_at only gates knowledge (R279)")
+    eq(ada.me(f"as_of={c2}&known_at={c_auth}")["held"], 500,
+       "regression probe: the capture already happened (as_of past the event) "
+       "but is not yet known at known_at=c_auth -> must not count (R279)")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}")["held"], 0,
        "before the authorization existed: nothing held")
     eq(ada.me(f"as_of={iso(parse_ts(c_auth) - timedelta(seconds=1))}"
