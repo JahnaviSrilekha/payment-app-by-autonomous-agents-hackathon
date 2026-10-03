@@ -162,6 +162,9 @@ def build_from_fixture(fixture):
         }
         service["request_order"].append(request_id)
 
+    # R286: seeded open holds are assumed created at reset unless created_at is
+    # supplied; the reset clock is read once for the whole fixture.
+    now = state_mod.now_utc()
     reset_time = state_mod.now_rfc3339()
     for authorization in authorization_list:
         if not isinstance(authorization, dict):
@@ -207,9 +210,38 @@ def build_from_fixture(fixture):
                 "captured_amount must be between 0 and the authorized amount")
         created_at = authorization.get("created_at", reset_time)
         try:
-            state_mod.parse_rfc3339(created_at)
+            created_parsed = state_mod.parse_rfc3339(created_at)
         except ValueError:
             raise errors.validation_failed("created_at must be an RFC 3339 timestamp")
+        # A hold created in the future would make the (now, now) view report it as
+        # "unknown" (not yet known), silently dropping it from held — rejected so the
+        # stage-2 wrapper equality holds for every accepted fixture (R286).
+        if created_parsed > now:
+            raise errors.validation_failed(
+                "authorization created_at must not be in the future")
+        # R287: a seeded closed hold is stored and read back with its given
+        # status/closed_at; no synthetic capture/void record is required. When the
+        # fixture omits closed_at the close defaults to creation — the earliest
+        # defensible instant, so a stored-expired seed whose expires_at still lies
+        # ahead reads back closed (stage-2 semantics). A close in the future of the
+        # reset would drop the hold out of the closed view: rejected.
+        closed_at = authorization.get("closed_at")
+        if closed_at is not None:
+            if not isinstance(closed_at, str):
+                raise errors.validation_failed("closed_at must be a string")
+            try:
+                closed_parsed = state_mod.parse_rfc3339(closed_at)
+            except ValueError:
+                raise errors.validation_failed(
+                    "closed_at must be an RFC 3339 timestamp")
+            if status == "open":
+                raise errors.validation_failed(
+                    "a seeded open authorization cannot have closed_at")
+            if closed_parsed > now:
+                raise errors.validation_failed(
+                    "closed_at must not be in the future")
+        elif status != "open":
+            closed_at = created_at
         payment_ids = authorization.get("payment_ids", [])
         if not isinstance(payment_ids, list) \
                 or any(not isinstance(pid, str) for pid in payment_ids):
@@ -228,6 +260,12 @@ def build_from_fixture(fixture):
             "status": status,
             "expires_at": authorization["expires_at"],
             "created_at": created_at,
+            # Hold lifecycle events (design section 20): seeded holds carry no
+            # reconstructed records (R287) — the unrecorded captured_amount and the
+            # stored status/closed_at carry the pre-reset lifecycle instead.
+            "captures": [],
+            "void": None,
+            "closed_at": closed_at,
             "payment_ids": list(payment_ids),
             "seq": state_mod.next_seq(service),
         }

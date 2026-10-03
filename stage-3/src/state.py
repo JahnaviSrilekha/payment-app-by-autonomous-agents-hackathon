@@ -84,30 +84,37 @@ def parse_rfc3339(value):
     return parsed.astimezone(timezone.utc)
 
 
-# --- authorizations: derived holds (design.md sections 10-11, ADR-004) --------
+# --- authorizations: derived holds (design sections 10-11, 20, ADR-004) --------
+#
+# Stage-3 generalizes these to (as_of, known_at) views implemented once in
+# authorizations.py (design section 20); the stage-2 two-argument forms below stay
+# as thin delegating wrappers so every stage-2 call site and test is unchanged and
+# there is exactly one implementation. The lazy import avoids the module cycle.
 
 
 def effective_status(authorization, now):
-    """Pure function of the stored authorization row and an injected `now` (never the
-    wall clock): an open authorization whose expires_at is at or before now is
-    "expired". Nothing is ever mutated — "expired" is a computed view (R159)."""
-    if authorization["status"] == "open" and parse_rfc3339(authorization["expires_at"]) <= now:
-        return "expired"
-    return authorization["status"]
+    """Pure function of the stored authorization row and an injected `now`: exactly
+    effective_status_view at (now, now) — known_at_for clamps synthetic rows only. An
+    open authorization whose expires_at is at or before now is "expired"; nothing is
+    ever mutated — "expired" is a computed view (R159)."""
+    from authorizations import effective_status_view, known_at_for
+    return effective_status_view(authorization, now, known_at_for(authorization, now))
 
 
 def remaining_amount(authorization, now):
-    """Amount still held: the uncaptured remainder of an effectively open
-    authorization, zero for anything closed (captured, voided or expired)."""
-    if effective_status(authorization, now) != "open":
-        return 0
-    return authorization["amount"] - authorization["captured_amount"]
+    """Amount still held at the injected `now`: exactly remaining_amount_view at
+    (now, now) — known_at_for clamps synthetic rows only."""
+    from authorizations import remaining_amount_view, known_at_for
+    return remaining_amount_view(authorization, now, known_at_for(authorization, now))
 
 
 def held(user_id, service, now):
-    """Sum of the user's open holds at the injected `now`. Pure: same inputs give the
-    same result, and expiry is judged only against `now` (R159)."""
-    return sum(remaining_amount(a, now) for a in service["authorizations"].values()
+    """Sum of the user's open holds at the injected `now`: exactly held_view at
+    (now, now) row by row — known_at_for clamps synthetic rows only (R276-R280
+    generalization, one per-row implementation)."""
+    from authorizations import remaining_amount_view, known_at_for
+    return sum(remaining_amount_view(a, now, known_at_for(a, now))
+               for a in service["authorizations"].values()
                if a["from_user_id"] == user_id)
 
 
