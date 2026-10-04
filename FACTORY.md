@@ -67,6 +67,11 @@ it adds to every handoff.*
 | Reasoning-heavy: planning, decomposition, spec interpretation, corner cases, merge decisions | coordinator, reviewer | Claude (claude-sonnet-5) | Quality of the plan and of the review decides how much rework follows. These two seats ran on a flat subscription. |
 | Volume-heavy: code and tests | developer, tester | GLM-5.3-Flash on Featherless | The developer writes most of the code. GLM-5.3-Flash is about 9× cheaper than the GLM-5.2 we used in the toy run ($0.15/$0.50 vs $1.40/$4.40 per million input/output tokens). The reviewer's independent probes compensate for the weaker author. |
 
+In the current design the choice is made once, per seat, by reasoning load: the seats that need the most reasoning
+(planning, decomposition, corner cases, merge decisions) run on a high-end model, Claude Sonnet, and the seats that need
+less reasoning per token (writing code and tests at volume) run on a cheaper model. It is a static split. It does not yet
+look at how hard an individual task is (section 7 describes the next step).
+
 The mandates carry `Harness:` and `Model:` lines for this reason (`mandates/developer.md`:
 `Model: featherless/zai-org/GLM-5.3-Flash`; `mandates/reviewer.md`: `Model: claude-sonnet-5`).
 
@@ -319,6 +324,11 @@ What this says:
   run 2 had 10 (2 in stage 1). Branches built from latest main still go stale when a parallel batch merges first, and
   the reviewer wrote *"same fix as every batch, one more rebase"* (`c17eb5ac`, stage 2). The next fix is to have the
   developer merge main immediately before handing off, or the reviewer produce the merge commit.
+- **Model choice is fixed per seat, not per task.** A complex task such as UI work and a one-line fix get the same
+  developer model. The next step is to route at run time: simple tasks stay on the cheaper model, and complex ones
+  (UI, concurrency, money invariants) go to a more advanced model, for the developer and the tester. We expect cost to
+  rise, but wall-clock time to fall (fewer reject-and-fix cycles) and quality to improve. We have not measured this; it is
+  a hypothesis for the next run, not a result.
 - **Throughput.** Stage 2 and stage 3 took 9–10 hours each, including limit waits.
 - **Run 1 only:** the 10,000-message room cap and the lost handoff that needed a human. Neither recurred in run 2.
 
