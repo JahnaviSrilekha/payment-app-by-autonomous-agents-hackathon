@@ -34,14 +34,139 @@ WeAreDevelopers × BAND "Dark Factory" hackathon, pocketful track.
 | `mandates/` | Standing instructions for the five seats. Role-only: no product, stack or track text. |
 | `room.json`, `room-2.json`, `room-3.json`, `room-4.json` | Band session logs, one room per stage, unedited. |
 
-## Run a stage
+## Run it locally
+
+Pebble is a single Python process using only the standard library. There is nothing to install.
+Use Python 3.12 or newer (the Docker image uses 3.12; the server also starts on 3.11).
+
+**Without Docker**
 
 ```sh
 cd stage-4
-cat RUN.md
+PORT=8080 python3 src/server.py
 ```
 
+**With Docker**
+
+```sh
+cd stage-4
+docker build -t pebble-stage4 . && docker run --rm -e PORT=8080 -p 8080:8080 pebble-stage4
+```
+
+Then open it:
+
+| What | URL |
+|---|---|
+| Health check (returns `{"status": "ok"}`) | http://localhost:8080/health |
+| Sign up / log in | http://localhost:8080/signup, http://localhost:8080/login |
+| Balance and pay | http://localhost:8080/ |
+| Requests | http://localhost:8080/requests |
+| Split a bill | http://localhost:8080/split |
+| Holds (authorizations) | http://localhost:8080/authorizations |
+
+The same paths answer with JSON for API clients that send `Accept: application/json`. Try it at phone width
+(375 px) and desktop width (1280 px) in your browser's device toolbar. Each earlier stage has its own folder
+and `RUN.md` (`stage-1/` to `stage-4/`); stage 4 includes everything from stages 1 to 3.
+
+The test-control endpoints `POST /_test/reset`, `GET /_test/export` and `POST /_test/import` are enabled and
+unauthenticated, by design, so the black-box suite can reset state.
+
+## Create test data
+
+The service keeps everything in memory, so it starts empty. Seed it with `POST /_test/reset`, which replaces all
+state with the fixture you send (and returns `204`). Amounts are in minor units: with `"minor_units": 2`,
+`10000` is 100.00 EUR. Run this once the service is up:
+
+```sh
+curl -s -X POST http://localhost:8080/_test/reset -H 'Content-Type: application/json' -d '{
+  "currency": "EUR", "minor_units": 2,
+  "users": [
+    {"id": "u_ada", "email": "ada@example.com", "password": "hunter2hunter2", "display_name": "Ada", "handle": "ada", "balance": 10000},
+    {"id": "u_bob", "email": "bob@example.com", "password": "hunter2hunter2", "display_name": "Bob", "handle": "bob", "balance": 5000},
+    {"id": "u_cyd", "email": "cyd@example.com", "password": "hunter2hunter2", "display_name": "Cyd", "handle": "cyd", "balance": 2500}
+  ],
+  "payments": [], "requests": []
+}'
+```
+
+You now have three users who can log in with the password `hunter2hunter2`. Reset again any time to start clean.
+Fixtures can also seed `payments`, `requests`, `authorizations` (holds) and `settlement_operator_ids`;
+`specs/stage-4/acceptance/core.py` (`fx_pay`, `fx_auth`, `fixture`) shows every field.
+To save a state and bring it back later: `curl -s http://localhost:8080/_test/export > state.json`, then
+`curl -s -X POST http://localhost:8080/_test/import -H 'Content-Type: application/json' -d @state.json`.
+
+## Try the app yourself
+
+**In the browser.** Seed the data, then open http://localhost:8080/login and sign in as `ada@example.com` /
+`hunter2hunter2` (or create a new account at `/signup`). Then walk the screens, with the browser's device toolbar
+at 375 px and again at 1280 px:
+
+1. `/` shows Ada's balance. Pay `bob` an amount and check the balance drops.
+2. `/requests` lists incoming and outgoing requests. Pay, decline or cancel one.
+3. `/split` splits an amount between `bob` and `cyd`, with a preview before you submit.
+4. `/authorizations` places a hold. Held money leaves your *available* balance but not your *total* until it is captured or voided.
+
+Open a second browser profile signed in as Bob to see the other side of each action.
+
+**From the command line** (after seeding). Each call below was run against this repository's stage 4 and returned what is noted:
+
+```sh
+B=http://localhost:8080; J='Content-Type: application/json'
+
+# log in as Ada and keep her token
+TOK=$(curl -s -X POST $B/auth/login -H "$J" -d '{"email":"ada@example.com","password":"hunter2hunter2"}' \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -s $B/me -H "Authorization: Bearer $TOK"        # balance 10000, held 0, available 10000
+
+# pay Bob 7.00; writes need an Idempotency-Key, and repeating the same key replays the original (HTTP 200)
+curl -s -X POST $B/payments -H "$J" -H "Authorization: Bearer $TOK" -H "Idempotency-Key: demo-1" \
+     -d '{"to_handle":"bob","amount":700,"note":"lunch"}'
+
+# split 10.00 between Bob and Cyd: two pending requests of 500 each
+curl -s -X POST $B/splits -H "$J" -H "Authorization: Bearer $TOK" -H "Idempotency-Key: demo-2" \
+     -d '{"amount":1000,"participant_handles":["bob","cyd"]}'
+
+# hold 2.00 for Cyd: /me then shows balance 9300, held 200, available 9100
+curl -s -X POST $B/authorizations -H "$J" -H "Authorization: Bearer $TOK" -H "Idempotency-Key: demo-3" \
+     -d '{"to_handle":"cyd","amount":200}'
+
+# Ada's statement, then a refund of 3.00 by Bob (use the payment_id returned by the payment above)
+curl -s "$B/statement?limit=5" -H "Authorization: Bearer $TOK"
+curl -s -X POST $B/payments/<payment_id>/refunds -H "$J" -H "Authorization: Bearer <BOB_TOKEN>" \
+     -H "Idempotency-Key: demo-4" -d '{"amount":300}'
+```
+
+Things worth trying on purpose: pay more than the balance (rejected, balances unchanged), repeat a write with the same
+key (replayed, no second transfer), repeat it with the same key and a different body (rejected), and refund more
+than the payment (rejected). The full list of rules is in `specs/stage-N/requirements.md`.
+
+## Test it
+
+Start the service as above, then in a second terminal from the repository root. The suites seed their own data (every
+test resets the service first), so no manual seeding is needed:
+
+```sh
+# 1. Black-box acceptance suite: every requirement R291-R334, plus the carried stage 1-3 suites
+cd specs/stage-4/acceptance
+python3 run.py --base-url http://127.0.0.1:8080      # exit code 0 means nothing failed
+
+# 2. Unit tests (Python, standard library only)
+cd ../../../stage-4
+python3 -m unittest discover -s tests -q
+
+# 3. UI script tests (Node, no packages)
+for f in tests/app_*_tests.js; do node "$f"; done
+```
+
+Expected results (we ran all three against a fresh stage-4 server on Python 3.11): acceptance `70 passed, 0 failed, 1 skipped`
+(the skipped test cross-checks a live stage-2 service and needs `--stage2-url`); unit tests `Ran 425 tests ... OK`
+(about 4 minutes); all six Node test files print `all N ... tests passed`.
+
+`specs/stage-4/acceptance/COVERAGE.md` maps each requirement id to its test.
+
 ## Check the repository
+
+The organisers' offline check of the whole repository, run from the kickoff package:
 
 ```sh
 cd dark-factory-wearedevs
