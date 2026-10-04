@@ -11,6 +11,42 @@ Pebble is a small shared-pot payments service, built in four stages (JSON API; w
 corrections; refunds and batch corrections) by four AI seats and a clock program, from one human dispatch, for the
 WeAreDevelopers × BAND "Dark Factory" hackathon, pocketful track.
 
+| | |
+|---|---|
+| **0** human messages after the dispatch (run 1: 5) | **4 of 4** stages built, verified and merged |
+| **160** commits, every one by a seat | **70 passed, 0 failed, 1 skipped** in the stage 4 acceptance suite |
+| **35** UI screenshots at 375 px and 1280 px | **29.8 h** wall-clock, about $25 Featherless |
+
+![Run 1 versus run 2 scorecard](docs/img/scorecard.png)
+
+## Watch and read
+
+| | |
+|---|---|
+| Slide deck | [`Pebble-deck.pdf`](Pebble-deck.pdf) (18 slides; the `.pptx` has the videos embedded) |
+| The running app, 5 min 10 s | [`media/pebble-app-demo.mp4`](media/pebble-app-demo.mp4): sign-up, pay, request, split a bill, place and capture a hold, two users side by side |
+| Exactly-once payments, 47 s | [`media/exactly-once-demo.mp4`](media/exactly-once-demo.mp4): a repeated payment does nothing; a changed note is a new payment (spec R1, R3, R59–R62, R116) |
+| The agents handing work to each other | [`media/band-room-handoffs.mp4`](media/band-room-handoffs.mp4): Band console, stage 3 room |
+| Design, costs and failures | [`FACTORY.md`](FACTORY.md) |
+
+## How the factory works
+
+```mermaid
+flowchart LR
+    H([Human: one dispatch]) --> C[Coordinator<br/>requirements, design,<br/>dependency graph, close-out]
+    C --> D[Developer<br/>code + unit tests<br/>one branch per batch]
+    C --> T[Tester<br/>completeness review,<br/>acceptance suite]
+    D -->|handoff| R[Reviewer<br/>clean-copy review,<br/>screenshots, probes]
+    T -->|handoff| R
+    R -->|rejection with evidence| D
+    R ==>|fast-forward merge, only seat that merges| M[(main)]
+    K[[Timekeeper script<br/>wakes the coordinator<br/>only when the room is quiet]] -.-> C
+    C -->|stage done: handover.md| N([Next stage room])
+```
+
+Models are routed by reasoning load: Claude Sonnet on the coordinator and reviewer; GLM-5.3-Flash on the developer and tester;
+the timekeeper is a script with no model.
+
 ## What changed between run 1 and run 2
 
 | Problem seen in run 1 (room logs) | Change to the mandates | Run 2 result |

@@ -12,6 +12,12 @@ time (UTC) and message id prefix, or a mandate by file and quoted text. Run 1 is
 mandates at tag `judged-run-1` of the team repo). Run 2 is this repository (`room.json`, `room-2.json`,
 `room-3.json`, `room-4.json`; mandates in `mandates/`).
 
+> **A note on `harness check`.** It reports "env-assignment" for `room-2.json`, `room-3.json` and `room-4.json`.
+> These are false positives: the pattern matches test code in the seats' tool calls such as `token=self.ada`,
+> `ada_token = login(...)` or `idem_key=...`. We scanned all four room files for bearer tokens, JWTs, API keys,
+> AWS and GitHub tokens and found none. The only password values are test fixtures (`hunter2hunter2`, `correct horse`).
+> The room files are unedited downloads, as the rules require.
+
 ## 1. Result at a glance
 
 | | Run 1 | Run 2 |
@@ -31,6 +37,8 @@ mandates at tag `judged-run-1` of the team repo). Run 2 is this repository (`roo
 
 The honest reading: run 2 is more reliable, fully unattended and better evidenced. It is not cheaper or
 faster in absolute terms, and we do not claim it is. Section 6 explains the cost and why we accept it.
+
+![Run 1 versus run 2 scorecard](docs/img/scorecard.png)
 
 ## 2. The factory
 
@@ -256,6 +264,8 @@ developer fixed before the report (`b4a7469`).
 own tick, and it follows the coordinator to the next room. Result: 1 of 42 ticks fired in a healthy room, against
 49 of 65 in run 1.
 
+![Clock ticks that woke an agent in a healthy room: run 1 75%, run 2 2%](docs/img/wasted_ticks.png)
+
 ## 5. How the factory catches bad work
 
 | Failure | Caught by | Real example from the logs |
@@ -273,6 +283,10 @@ own tick, and it follows the coordinator to the next room. Result: 1 of 42 ticks
 Rejection-to-merge times in run 2: 58, 15, 15, 7 and 14 minutes. The first fix cycle in run 1's stage 2 took more than
 three and a half hours to verify, because three more batches were piled on top of it.
 
+Run 2's five rejections were fixed and merged in 7 to 58 minutes. Run 1's single rejection was still not mergeable after 3 h 31 min.
+
+![Run 2 rejection to fix merged, in minutes, against run 1's 3 h 31 min](docs/img/reject_to_merge.png)
+
 ## 6. What it cost, honestly
 
 | | Run 1 | Run 2 |
@@ -283,7 +297,9 @@ three and a half hours to verify, because three more batches were piled on top o
 | Tool calls | 3,927 | 4,919 |
 | Seat commits | 132 | 160 |
 | Featherless spend | about $10.50 (dashboard $13.82 for the day, including the last practice run) | about $25 |
-| Claude seat tokens | about 359 M (subscription) | not yet read from usage |
+| Claude seat tokens | about 359 M (subscription) | about 49% of one Claude Pro plan's weekly limit (usage meter went from 51% used to full), plus a small amount of paid extra usage at the very end |
+
+![Wall-clock hours and messages per stage, run 1 versus run 2](docs/img/cost_per_stage.png)
 
 Per stage (run 1 → run 2): hours 4.4→3.7, 7.5→9.7, 8.6→9.6, 5.1→6.8; messages 2,226→2,607, 3,513→4,621,
 3,000→3,768, 2,314→3,186.
@@ -315,6 +331,8 @@ What this says:
 
   A weekly-limit error also hit the reviewer at 18:29 in stage 4 (`f4d544f9`) and delayed the last merge by about 30
   minutes. **Our process did not reduce limit exposure.** Only a failover model for the Claude seats would.
+  ![Hours lost per Claude session-limit window in run 2](docs/img/session_limits.png)
+
 - **The timekeeper cannot wake a seat whose account is exhausted.** 27 of run 2's 42 ticks landed on a coordinator that was at
   its limit and failed with the same error. The backoff keys off "newest message is our own tick", but each failed turn
   posts its own error messages, so the backoff never engages. The next fix: have the timekeeper read the limit's reset
