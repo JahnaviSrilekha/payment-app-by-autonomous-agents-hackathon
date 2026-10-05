@@ -23,6 +23,7 @@ WeAreDevelopers × BAND "Dark Factory" hackathon, pocketful track.
 
 | | |
 |---|---|
+| **Submission video, 3 min 36 s** | [`media/pebble-submission-video.mp4`](media/pebble-submission-video.mp4): the whole story with voice-over: factory, run 1 failure and fix, the running app, exactly-once, honest costs |
 | Slide deck | [`Pebble-deck.pdf`](Pebble-deck.pdf) (18 slides; the `.pptx` has the videos embedded) |
 | The running app, 5 min 10 s | [`media/pebble-app-demo.mp4`](media/pebble-app-demo.mp4): sign-up, pay, request, split a bill, place and capture a hold, two users side by side |
 | Exactly-once payments, 47 s | [`media/exactly-once-demo.mp4`](media/exactly-once-demo.mp4): a repeated payment does nothing; a changed note is a new payment (spec R1, R3, R59–R62, R116) |
